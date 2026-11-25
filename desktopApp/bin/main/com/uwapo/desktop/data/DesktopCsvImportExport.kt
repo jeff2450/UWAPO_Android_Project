@@ -97,35 +97,58 @@ object DesktopCsvImportExport {
         collectedRevenue: Long,
         estimatedArrears: Long
     ): ByteArray {
-        val rows = mutableListOf<List<Any?>>()
-        rows.add(listOf("Financial & Contribution Reports - Term Report"))
-        rows.add(listOf("Term:", "$termTitle $year"))
-        rows.add(listOf())
-        rows.add(listOf("SUMMARY METRICS", "AMOUNT (TZS)"))
-        rows.add(listOf("Expected Revenue", expectedRevenue))
-        rows.add(listOf("Term Collected", collectedRevenue))
-        rows.add(listOf("Estimated Arrears", estimatedArrears))
-        rows.add(listOf())
-        rows.add(listOf("MEMBER CONTRIBUTIONS GRID ($termTitle $year)"))
+        val formulaRows = mutableListOf<List<Any?>>()
+        // Row 1: Title
+        formulaRows.add(listOf("Financial & Contribution Reports - Term Report"))
+        // Row 2: Term label
+        formulaRows.add(listOf("Term:", "$termTitle $year"))
+        // Row 3: blank
+        formulaRows.add(listOf())
+        // Rows 4-7: Summary metrics
+        formulaRows.add(listOf("SUMMARY METRICS", "AMOUNT (TZS)"))
+        formulaRows.add(listOf("Expected Revenue", expectedRevenue))
+        formulaRows.add(listOf("Term Collected", collectedRevenue))
+        formulaRows.add(listOf("Estimated Arrears", estimatedArrears))
+        // Row 8: blank
+        formulaRows.add(listOf())
+        // Row 9: Grid title
+        formulaRows.add(listOf("MEMBER CONTRIBUTIONS GRID ($termTitle $year)"))
 
-        val header = mutableListOf<Any?>("Member No", "Full Name")
+        // Row 10: Header — Full Name | month1 | month2 ... | Total (TZS)
+        val header = mutableListOf<Any?>("Full Name")
         header.addAll(monthLabels)
         header.add("Total (TZS)")
-        rows.add(header)
+        formulaRows.add(header)   // row index 9 → Excel row 10
 
-        memberRows.forEach { m ->
-            val row = mutableListOf<Any?>(m.memberNo, m.fullName)
-            row.addAll(m.monthlyAmounts)
-            row.add(m.totalAmount)
-            rows.add(row)
+        val dataStartRow = 11  // first member data row (1-based Excel row)
+        // month columns: B=col1, C=col2 ... (col 'A' is name, then month cols, then total col)
+        val numMonths = monthLabels.size
+        // Total column index (0-based): 1 + numMonths
+        val totalColIdx = 1 + numMonths
+        val totalColLetter = getExcelColName(totalColIdx)
+
+        memberRows.forEachIndexed { i, m ->
+            val excelRow = dataStartRow + i
+            val row = mutableListOf<Any?>(m.fullName)
+            m.monthlyAmounts.forEach { amt -> row.add(amt) }
+            // SUM formula for row total: =SUM(B{row}:{lastMonthCol}{row})
+            val firstMonthLetter = getExcelColName(1)
+            val lastMonthLetter = getExcelColName(numMonths)
+            row.add(XlsxFormula("SUM($firstMonthLetter$excelRow:$lastMonthLetter$excelRow)"))
+            formulaRows.add(row)
         }
 
-        val totalsRow = mutableListOf<Any?>("GRAND TOTAL", "")
-        totalsRow.addAll(grandTotalMonthly)
-        totalsRow.add(grandTotalTerm)
-        rows.add(totalsRow)
+        // Grand totals row
+        val grandRow = dataStartRow + memberRows.size
+        val totalsRow = mutableListOf<Any?>("GRAND TOTAL")
+        for (mIdx in 0 until numMonths) {
+            val colLetter = getExcelColName(1 + mIdx)
+            totalsRow.add(XlsxFormula("SUM(${colLetter}${dataStartRow}:${colLetter}${grandRow - 1})"))
+        }
+        totalsRow.add(XlsxFormula("SUM(${totalColLetter}${dataStartRow}:${totalColLetter}${grandRow - 1})"))
+        formulaRows.add(totalsRow)
 
-        return createXlsx("Term Report", rows)
+        return createXlsx("Term Report", formulaRows)
     }
 
     fun exportTermReportToCsv(
@@ -197,17 +220,20 @@ object DesktopCsvImportExport {
         if (batchBreakdown.isNotEmpty()) {
             rows.add(listOf("BATCH COLLECTION BREAKDOWN"))
             rows.add(listOf("Batch Year", "Total Collected (TZS)"))
+            val batchDataStart = rows.size + 1
             batchBreakdown.forEach { (bYear, amt) ->
                 rows.add(listOf("Batch $bYear", amt))
             }
+            val batchDataEnd = rows.size
+            rows.add(listOf("TOTAL", XlsxFormula("SUM(B${batchDataStart}:B${batchDataEnd})")))
             rows.add(listOf())
         }
 
         if (arrearsMembers.isNotEmpty()) {
             rows.add(listOf("MEMBERS IN ARREARS ($periodTitle)"))
-            rows.add(listOf("Member No", "Full Name", "Phone", "Status"))
+            rows.add(listOf("Full Name", "Phone", "Status"))
             arrearsMembers.forEach { m ->
-                rows.add(listOf(m.memberNo, m.fullName, m.phone, m.status))
+                rows.add(listOf(m.fullName, m.phone, m.status))
             }
         }
 
@@ -282,17 +308,29 @@ object DesktopCsvImportExport {
 
         rows.add(listOf("MONTHLY COLLECTIONS BREAKDOWN ($year)"))
         rows.add(listOf("Month", "Amount (TZS)"))
+        val monthBreakdownStartRow = rows.size + 1  // next Excel row (1-based)
         monthlyBreakdown.forEach { (monthName, amt) ->
             rows.add(listOf(monthName, amt))
         }
+        val monthBreakdownEndRow = rows.size  // last month data row
+        // Add SUM row for monthly breakdown
+        rows.add(listOf("TOTAL", XlsxFormula("SUM(B${monthBreakdownStartRow}:B${monthBreakdownEndRow})")))
         rows.add(listOf())
 
         if (arrearsMembers.isNotEmpty()) {
             rows.add(listOf("MEMBERS IN ANNUAL ARREARS ($year)"))
-            rows.add(listOf("Member No", "Full Name", "Phone", "Total Paid (TZS)", "Shortfall (TZS)"))
+            rows.add(listOf("Full Name", "Phone", "Total Paid (TZS)", "Shortfall (TZS)"))
+            val arrearsDataStart = rows.size + 1
             arrearsMembers.forEach { m ->
-                rows.add(listOf(m.memberNo, m.fullName, m.phone, m.amountPaid, m.shortfall))
+                rows.add(listOf(m.fullName, m.phone, m.amountPaid, m.shortfall))
             }
+            val arrearsDataEnd = rows.size
+            // SUM row for arrears totals
+            rows.add(listOf(
+                "TOTAL", "",
+                XlsxFormula("SUM(C${arrearsDataStart}:C${arrearsDataEnd})"),
+                XlsxFormula("SUM(D${arrearsDataStart}:D${arrearsDataEnd})")
+            ))
         }
 
         return createXlsx("Annual Report $year", rows)
@@ -337,6 +375,9 @@ object DesktopCsvImportExport {
 
         return lines.joinToString("\r\n") + "\r\n"
     }
+
+    /** Wraps an Excel formula string so createXlsx emits a <f> element instead of a value. */
+    data class XlsxFormula(val expression: String)
 
     fun createXlsx(sheetName: String = "Report", rows: List<List<Any?>>): ByteArray {
         val baos = java.io.ByteArrayOutputStream()
@@ -405,6 +446,7 @@ object DesktopCsvImportExport {
                         val colName = getExcelColName(cIdx) + rowNum
                         when (cell) {
                             is Number -> sb.append("""<c r="$colName"><v>$cell</v></c>""")
+                            is XlsxFormula -> sb.append("""<c r="$colName"><f>${escapeXml(cell.expression)}</f></c>""")
                             else -> {
                                 val esc = escapeXml(cell.toString())
                                 sb.append("""<c r="$colName" t="inlineStr"><is><t>$esc</t></is></c>""")
@@ -421,7 +463,7 @@ object DesktopCsvImportExport {
         return baos.toByteArray()
     }
 
-    private fun getExcelColName(col: Int): String {
+    internal fun getExcelColName(col: Int): String {
         var c = col
         val sb = StringBuilder()
         while (c >= 0) {
