@@ -690,7 +690,6 @@ object DesktopCsvImportExport {
         db.refreshMembers()
         val existingMembers = db.members.value.toMutableList()
         val newMembers = mutableListOf<MemberEntity>()
-        val notes = mutableListOf<String>()
         val warnings = mutableListOf<String>()
         val payments = LinkedHashMap<String, PaymentEntity>()
         val largeAmounts = mutableListOf<String>()
@@ -699,7 +698,49 @@ object DesktopCsvImportExport {
         var sheetsWithTotal = 0
         var sheetsRead = 0
 
-        for ((sheetIdx, sheet) in sheets.withIndex()) {
+        // Detect and strip a leading "Member No" column across all sheets.
+        // A leading extra column is recognised when:
+        //   • its header cell is a known member-number synonym, OR
+        //   • its data cells are all blank or pure-numeric (IDs) while the next column carries real names.
+        val MEMBER_NO_HEADERS = setOf(
+            "member no", "member_no", "member number", "membership number",
+            "no", "no.", "namba", "namba ya mwanachama", "member id"
+        )
+        fun detectLeadingMemberNoCol(sheet: List<List<String>>): Boolean {
+            val headerRow = sheet.firstOrNull() ?: return false
+            val col0 = headerRow.getOrNull(0)?.trim()?.lowercase(Locale.ROOT) ?: return false
+            if (col0 in MEMBER_NO_HEADERS) return true
+            // If col0 header is "full name" or similar it is NOT a member-no column.
+            val NAME_HEADERS = setOf("full name", "full_name", "name", "jina", "member name")
+            if (col0 in NAME_HEADERS) return false
+            // Heuristic: if the first 15 data rows of col0 are all blank or purely numeric,
+            // and col1 has real text, treat col0 as a stray member-no column.
+            val dataRows = sheet.drop(1).take(15).filter { it.any { c -> c.isNotBlank() } }
+            if (dataRows.isEmpty()) return false
+            val col0AllNumericOrBlank = dataRows.all { row ->
+                val c = row.getOrNull(0)?.trim() ?: ""
+                c.isBlank() || c.matches(Regex("""^\d+\.?\d*$"""))
+            }
+            val col1HasText = dataRows.any { row ->
+                val c = row.getOrNull(1)?.trim() ?: ""
+                c.isNotBlank() && !c.matches(Regex("""^\d+\.?\d*$"""))
+            }
+            return col0AllNumericOrBlank && col1HasText
+        }
+
+        // Strip a leading column from every row in a sheet.
+        fun stripLeadingCol(sheet: List<List<String>>): List<List<String>> =
+            sheet.map { row -> if (row.size > 1) row.drop(1) else row }
+
+        // Adjust each sheet: if a leading member-no column is found, strip it and note it.
+        val adjustedSheets = sheets.map { sheet ->
+            if (detectLeadingMemberNoCol(sheet)) {
+                notes.add("A leading 'Member No' column was detected and ignored during import — only names are used for member matching.")
+                stripLeadingCol(sheet)
+            } else sheet
+        }
+
+        for ((sheetIdx, sheet) in adjustedSheets.withIndex()) {
             val detectedCols = mutableMapOf<Int, Int>()
             for (row in sheet.take(20)) {
                 for ((cIdx, cell) in row.withIndex()) {
@@ -840,10 +881,20 @@ object DesktopCsvImportExport {
         if (rows.isEmpty()) return emptyPlan("The file has no readable rows.")
         val header = rows.first().map { it.trim().removePrefix("\uFEFF").lowercase(Locale.ROOT) }
         fun index(vararg names: String): Int = header.indexOfFirst { it in names }
-        val iNo = index("member_no", "member number", "membership number", "member_id", "member id", "no", "no.")
+        val iNo = index(
+            "member_no", "member number", "membership number", "member_id", "member id",
+            "no", "no.", "member no", "namba", "namba ya mwanachama"
+        )
         var iName = index("full_name", "name", "member name", "full name", "jina")
         if (iName < 0 && iNo >= 0) iName = iNo
         if (iNo < 0 && iName < 0) throw IllegalArgumentException("File must contain member_no or full_name columns.")
+
+        // If the file has BOTH a member-no column and a name column, note that member-no will be
+        // used only for matching and will be dropped — the name column governs identity.
+        val notes = mutableListOf<String>()
+        if (iNo >= 0 && iName >= 0 && iNo != iName) {
+            notes.add("A 'Member No' column was detected in the file. It is used only for member matching and is otherwise ignored — member names are the primary identifier.")
+        }
 
         val iPhone = index("phone", "phone_number", "phone number", "mobile")
         val iStatus = index("status")

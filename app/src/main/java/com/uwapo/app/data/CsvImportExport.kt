@@ -569,7 +569,32 @@ object CsvImportExport {
         var sheetDeclaredTotal: Long? = null
         val skipped = 0
 
-        for ((sheetIdx, sheet) in sheets.withIndex()) {
+        // Some ledgers have an extra member-number column before the names. These
+        // sheet-specific numbers are not stable IDs, so drop the column first.
+        val memberNoHeaders = setOf(
+            "member no", "member_no", "member number", "membership number",
+            "no", "no.", "namba", "namba ya mwanachama", "member id"
+        )
+        val nameHeaders = setOf("full name", "full_name", "name", "jina", "member name")
+        val adjustedSheets = sheets.map { sheet ->
+            val header = sheet.firstOrNull() ?: return@map sheet
+            val firstHeader = header.getOrNull(0)?.trim()?.lowercase(Locale.ROOT).orEmpty()
+            val dataRows = sheet.drop(1).take(15).filter { row -> row.any { it.isNotBlank() } }
+            val hasExtraNumberColumn = firstHeader in memberNoHeaders ||
+                (firstHeader !in nameHeaders && dataRows.isNotEmpty() &&
+                    dataRows.all { row ->
+                        val cell = row.getOrNull(0)?.trim().orEmpty()
+                        cell.isBlank() || cell.matches(Regex("""^\d+\.?\d*$"""))
+                    } && dataRows.any { row ->
+                        val cell = row.getOrNull(1)?.trim().orEmpty()
+                        cell.isNotBlank() && !cell.matches(Regex("""^\d+\.?\d*$"""))
+                    })
+            if (hasExtraNumberColumn && header.size > 1) {
+                sheet.map { row -> if (row.size > 1) row.drop(1) else row }
+            } else sheet
+        }
+
+        for ((sheetIdx, sheet) in adjustedSheets.withIndex()) {
             val detectedCols = mutableMapOf<Int, Int>()
             for (row in sheet.take(20)) {
                 for ((cIdx, cell) in row.withIndex()) {
