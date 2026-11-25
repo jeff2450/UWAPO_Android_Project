@@ -206,14 +206,36 @@ fun UWAPORoot(
             }
         }
     }
+
+    var pendingExportCsvContent by remember { mutableStateOf<String?>(null) }
+    var pendingExportXlsxBytes by remember { mutableStateOf<ByteArray?>(null) }
+
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
         if (uri != null) scope.launch {
             try {
-                val csv = CsvImportExport.export(members, payments)
+                val csv = pendingExportCsvContent ?: CsvImportExport.export(members, payments)
                 withContext(Dispatchers.IO) { (context.contentResolver.openOutputStream(uri) ?: throw IllegalStateException("Could not create export file.")).bufferedWriter(Charsets.UTF_8).use { it.write(csv) } }
                 Toast.makeText(context, context.getString(R.string.toast_csv_saved), Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
                 Toast.makeText(context, context.getString(R.string.toast_export_failed, e.message ?: ""), Toast.LENGTH_LONG).show()
+            } finally {
+                pendingExportCsvContent = null
+            }
+        }
+    }
+
+    val exportXlsxLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) { uri ->
+        if (uri != null) scope.launch {
+            try {
+                val bytes = pendingExportXlsxBytes ?: CsvImportExport.exportToXlsx(members, payments)
+                withContext(Dispatchers.IO) {
+                    (context.contentResolver.openOutputStream(uri) ?: throw IllegalStateException("Could not create export file.")).use { it.write(bytes) }
+                }
+                Toast.makeText(context, context.getString(R.string.toast_excel_saved), Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, context.getString(R.string.toast_export_failed, e.message ?: ""), Toast.LENGTH_LONG).show()
+            } finally {
+                pendingExportXlsxBytes = null
             }
         }
     }
@@ -385,7 +407,14 @@ fun UWAPORoot(
                 members = members,
                 payments = payments,
                 expenses = expenses,
-                onExport = { exportLauncher.launch("uwapo-report-${System.currentTimeMillis()}.csv") }
+                onExportCsv = { filename, csvContent ->
+                    pendingExportCsvContent = csvContent
+                    exportLauncher.launch(filename)
+                },
+                onExportXlsx = { filename, xlsxBytes ->
+                    pendingExportXlsxBytes = xlsxBytes
+                    exportXlsxLauncher.launch(filename)
+                }
             )
         }
     }
@@ -1689,7 +1718,8 @@ private fun ReportsScreen(
     members: List<MemberEntity>,
     payments: List<PaymentEntity>,
     expenses: List<ExpenseEntity>,
-    onExport: () -> Unit
+    onExportCsv: (String, String) -> Unit,
+    onExportXlsx: (String, ByteArray) -> Unit
 ) {
     val context = LocalContext.current
     var selectedReportType by rememberSaveable { mutableIntStateOf(0) } // 0 = Monthly, 1 = Annual
@@ -1939,8 +1969,142 @@ private fun ReportsScreen(
             }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    val filename = when (selectedReportType) {
+                        0 -> "uwapo-monthly-report-${selectedYear}-${selectedMonth}.xlsx"
+                        1 -> "uwapo-annual-report-${selectedYear}.xlsx"
+                        else -> "uwapo-term-report-${selectedYear}-term${selectedTerm + 1}.xlsx"
+                    }
+                    val bytes = when (selectedReportType) {
+                        0 -> {
+                            val periodTitle = "${monthNames[selectedMonth - 1]} $selectedYear"
+                            val arrearsList = monthlyArrearsMembers.map {
+                                CsvImportExport.ArrearsMemberExportRow(it.memberNo, it.fullName, it.phone, it.status)
+                            }
+                            CsvImportExport.exportMonthlyReportToXlsx(
+                                periodTitle = periodTitle,
+                                collectionsTotal = monthlyCollections,
+                                expensesTotal = monthlyExpensesTotal,
+                                netMovement = monthlyNetMovement,
+                                expectedRevenue = expectedMonthly,
+                                estimatedArrears = estimatedMonthlyArrears,
+                                memberCount = activeCount,
+                                batchBreakdown = monthlyBatchBreakdown,
+                                arrearsMembers = arrearsList
+                            )
+                        }
+                        1 -> {
+                            val arrearsList = annualArrearsMembers.map {
+                                val paid = annualPayments.filter { p -> p.memberId == it.id }.sumOf { it.amountTzs }
+                                CsvImportExport.ArrearsMemberExportRow(it.memberNo, it.fullName, it.phone, it.status, paid, (120000L - paid).coerceAtLeast(0L))
+                            }
+                            CsvImportExport.exportAnnualReportToXlsx(
+                                year = selectedYear,
+                                collectionsTotal = annualCollections,
+                                expensesTotal = annualExpensesTotal,
+                                netMovement = annualNetMovement,
+                                expectedRevenue = expectedAnnual,
+                                estimatedShortfall = estimatedAnnualShortfall,
+                                monthlyBreakdown = annualMonthlyBreakdown,
+                                arrearsMembers = arrearsList
+                            )
+                        }
+                        else -> {
+                            val rows = termMemberRows.map {
+                                CsvImportExport.TermMemberExportRow(it.memberNo, it.fullName, it.monthlyAmounts, it.totalAmount)
+                            }
+                            val expectedRev = activeCount.toLong() * 60000L
+                            val collectedRev = termPayments.sumOf { it.amountTzs }
+                            val estArrears = (expectedRev - collectedRev).coerceAtLeast(0L)
+                            CsvImportExport.exportTermReportToXlsx(
+                                termTitle = termTitle,
+                                year = selectedYear,
+                                monthLabels = termMonthLabels,
+                                memberRows = rows,
+                                grandTotalMonthly = grandTotalMonthly,
+                                grandTotalTerm = grandTotalTerm,
+                                expectedRevenue = expectedRev,
+                                collectedRevenue = collectedRev,
+                                estimatedArrears = estArrears
+                            )
+                        }
+                    }
+                    onExportXlsx(filename, bytes)
+                },
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.FileDownload, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text(stringResource(R.string.export_excel), style = MaterialTheme.typography.labelSmall)
+            }
+
+            OutlinedButton(
+                onClick = {
+                    val filename = when (selectedReportType) {
+                        0 -> "uwapo-monthly-report-${selectedYear}-${selectedMonth}.csv"
+                        1 -> "uwapo-annual-report-${selectedYear}.csv"
+                        else -> "uwapo-term-report-${selectedYear}-term${selectedTerm + 1}.csv"
+                    }
+                    val csvContent = when (selectedReportType) {
+                        0 -> {
+                            val periodTitle = "${monthNames[selectedMonth - 1]} $selectedYear"
+                            val arrearsList = monthlyArrearsMembers.map {
+                                CsvImportExport.ArrearsMemberExportRow(it.memberNo, it.fullName, it.phone, it.status)
+                            }
+                            CsvImportExport.exportMonthlyReportToCsv(
+                                periodTitle = periodTitle,
+                                collectionsTotal = monthlyCollections,
+                                expensesTotal = monthlyExpensesTotal,
+                                netMovement = monthlyNetMovement,
+                                expectedRevenue = expectedMonthly,
+                                estimatedArrears = estimatedMonthlyArrears,
+                                memberCount = activeCount,
+                                batchBreakdown = monthlyBatchBreakdown,
+                                arrearsMembers = arrearsList
+                            )
+                        }
+                        1 -> {
+                            val arrearsList = annualArrearsMembers.map {
+                                val paid = annualPayments.filter { p -> p.memberId == it.id }.sumOf { it.amountTzs }
+                                CsvImportExport.ArrearsMemberExportRow(it.memberNo, it.fullName, it.phone, it.status, paid, (120000L - paid).coerceAtLeast(0L))
+                            }
+                            CsvImportExport.exportAnnualReportToCsv(
+                                year = selectedYear,
+                                collectionsTotal = annualCollections,
+                                expensesTotal = annualExpensesTotal,
+                                netMovement = annualNetMovement,
+                                expectedRevenue = expectedAnnual,
+                                estimatedShortfall = estimatedAnnualShortfall,
+                                monthlyBreakdown = annualMonthlyBreakdown,
+                                arrearsMembers = arrearsList
+                            )
+                        }
+                        else -> {
+                            val rows = termMemberRows.map {
+                                CsvImportExport.TermMemberExportRow(it.memberNo, it.fullName, it.monthlyAmounts, it.totalAmount)
+                            }
+                            val expectedRev = activeCount.toLong() * 60000L
+                            val collectedRev = termPayments.sumOf { it.amountTzs }
+                            val estArrears = (expectedRev - collectedRev).coerceAtLeast(0L)
+                            CsvImportExport.exportTermReportToCsv(
+                                termTitle = termTitle,
+                                year = selectedYear,
+                                monthLabels = termMonthLabels,
+                                memberRows = rows,
+                                grandTotalMonthly = grandTotalMonthly,
+                                grandTotalTerm = grandTotalTerm,
+                                expectedRevenue = expectedRev,
+                                collectedRevenue = collectedRev,
+                                estimatedArrears = estArrears
+                            )
+                        }
+                    }
+                    onExportCsv(filename, csvContent)
+                },
+                modifier = Modifier.weight(1f)
+            ) {
                 Icon(Icons.Default.FileDownload, contentDescription = null)
                 Spacer(Modifier.width(4.dp))
                 Text(stringResource(R.string.export_csv), style = MaterialTheme.typography.labelSmall)

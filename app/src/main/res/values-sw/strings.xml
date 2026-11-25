@@ -68,7 +68,8 @@
 
     <!-- Reports Screen -->
     <string name="reports_title">Ripoti</string>
-    <string name="export_csv">Pakua CSV ya wanachama na malipo</string>
+    <string name="export_csv">Pakua CSV</string>
+    <string name="export_excel">Pakua Excel (.xlsx)</string>
     <string name="current_month_recorded">Yaliyowekwa mwezi huu</string>
     <string name="expected_month_formula">Inayotarajiwa mwezi huu (wanachama hai × TZS 10,000)</string>
     <string name="members_in_database">Wanachama kwenye hifadhidata ya simu</string>
@@ -116,6 +117,7 @@
     <string name="toast_import_complete">Uingizaji umekamilika: wanachama %1$d, malipo %2$d yameongezwa; mistari %3$d imerukwa.</string>
     <string name="toast_import_failed">Uingizaji kumeshindikana: %1$s</string>
     <string name="toast_csv_saved">Faili la CSV limehifadhiwa.</string>
+    <string name="toast_excel_saved">Faili la Excel limehifadhiwa.</string>
     <string name="toast_export_failed">Upakuaji kumeshindikana: %1$s</string>
     <string name="toast_payment_saved">Malipo yamehifadhiwa kwenye simu hii.</string>
     <string name="toast_payment_save_failed">Haikuwezekana kuhifadhi malipo: %1$s</string>

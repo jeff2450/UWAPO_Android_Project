@@ -48,8 +48,8 @@ fun MemberProfileDialog(
     var showDeleteConfirmation by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
-    val memberPayments = remember(payments, member.id) {
-        payments.filter { it.memberId == member.id }
+    val memberPayments = remember(payments, member.id, member.batchYear) {
+        payments.filter { it.memberId == member.id && it.periodYear == member.batchYear }
     }
 
     val joinDateStr = remember(member.joinedAt) {

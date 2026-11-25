@@ -68,7 +68,8 @@
 
     <!-- Reports Screen -->
     <string name="reports_title">Reports</string>
-    <string name="export_csv">Export member and payment CSV</string>
+    <string name="export_csv">Export CSV</string>
+    <string name="export_excel">Export Excel (.xlsx)</string>
     <string name="current_month_recorded">Current month recorded</string>
     <string name="expected_month_formula">Expected this month (active members × TZS 10,000)</string>
     <string name="members_in_database">Members in local database</string>
@@ -116,6 +117,7 @@
     <string name="toast_import_complete">Import complete: %1$d members, %2$d payments added; %3$d rows skipped.</string>
     <string name="toast_import_failed">Import failed: %1$s</string>
     <string name="toast_csv_saved">CSV export saved.</string>
+    <string name="toast_excel_saved">Excel export saved.</string>
     <string name="toast_export_failed">Export failed: %1$s</string>
     <string name="toast_payment_saved">Payment saved on this device.</string>
     <string name="toast_payment_save_failed">Could not save payment: %1$s</string>

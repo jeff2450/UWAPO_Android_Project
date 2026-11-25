@@ -30,6 +30,22 @@ object DesktopCsvImportExport {
         "december" to 12, "dec" to 12, "desemba" to 12
     )
 
+    data class TermMemberExportRow(
+        val memberNo: String,
+        val fullName: String,
+        val monthlyAmounts: List<Long>,
+        val totalAmount: Long
+    )
+
+    data class ArrearsMemberExportRow(
+        val memberNo: String,
+        val fullName: String,
+        val phone: String,
+        val status: String,
+        val amountPaid: Long = 0L,
+        val shortfall: Long = 0L
+    )
+
     fun export(members: List<MemberEntity>, payments: List<PaymentEntity>): String {
         val header = listOf("member_no", "full_name", "phone", "join_date", "status", "period_year", "period_month", "amount_paid_tzs", "paid_at", "payment_method", "receipt_reference", "source_note")
         val memberMap = members.associateBy { it.id }
@@ -49,6 +65,378 @@ object DesktopCsvImportExport {
         }
         return lines.joinToString("\r\n") + "\r\n"
     }
+
+    fun exportToXlsx(members: List<MemberEntity>, payments: List<PaymentEntity>): ByteArray {
+        val header = listOf("member_no", "full_name", "phone", "join_date", "status", "period_year", "period_month", "amount_paid_tzs", "paid_at", "payment_method", "receipt_reference", "source_note")
+        val memberMap = members.associateBy { it.id }
+        val rows = mutableListOf<List<Any?>>(header)
+        payments.forEach { payment ->
+            val member = memberMap[payment.memberId] ?: return@forEach
+            val paidDate = java.time.Instant.ofEpochMilli(payment.paidAt).atZone(ZoneId.of("Africa/Dar_es_Salaam")).toLocalDate().toString()
+            val joinedDate = java.time.Instant.ofEpochMilli(member.joinedAt).atZone(ZoneId.of("Africa/Dar_es_Salaam")).toLocalDate().toString()
+            rows.add(listOf(member.memberNo, member.fullName, member.phone, joinedDate, member.status,
+                payment.periodYear, payment.periodMonth, payment.amountTzs, paidDate,
+                payment.method, payment.receiptNo, "Exported from UWAPO Desktop (${payment.syncStatus})"))
+        }
+        val paidMemberIds = payments.map { it.memberId }.toSet()
+        members.filter { it.id !in paidMemberIds }.forEach { member ->
+            val joinedDate = java.time.Instant.ofEpochMilli(member.joinedAt).atZone(ZoneId.of("Africa/Dar_es_Salaam")).toLocalDate().toString()
+            rows.add(listOf(member.memberNo, member.fullName, member.phone, joinedDate, member.status, "", "", "", "", "", "", "No payment row"))
+        }
+        return createXlsx("Members & Payments", rows)
+    }
+
+    fun exportTermReportToXlsx(
+        termTitle: String,
+        year: Int,
+        monthLabels: List<String>,
+        memberRows: List<TermMemberExportRow>,
+        grandTotalMonthly: List<Long>,
+        grandTotalTerm: Long,
+        expectedRevenue: Long,
+        collectedRevenue: Long,
+        estimatedArrears: Long
+    ): ByteArray {
+        val rows = mutableListOf<List<Any?>>()
+        rows.add(listOf("Financial & Contribution Reports - Term Report"))
+        rows.add(listOf("Term:", "$termTitle $year"))
+        rows.add(listOf())
+        rows.add(listOf("SUMMARY METRICS", "AMOUNT (TZS)"))
+        rows.add(listOf("Expected Revenue", expectedRevenue))
+        rows.add(listOf("Term Collected", collectedRevenue))
+        rows.add(listOf("Estimated Arrears", estimatedArrears))
+        rows.add(listOf())
+        rows.add(listOf("MEMBER CONTRIBUTIONS GRID ($termTitle $year)"))
+
+        val header = mutableListOf<Any?>("Member No", "Full Name")
+        header.addAll(monthLabels)
+        header.add("Total (TZS)")
+        rows.add(header)
+
+        memberRows.forEach { m ->
+            val row = mutableListOf<Any?>(m.memberNo, m.fullName)
+            row.addAll(m.monthlyAmounts)
+            row.add(m.totalAmount)
+            rows.add(row)
+        }
+
+        val totalsRow = mutableListOf<Any?>("GRAND TOTAL", "")
+        totalsRow.addAll(grandTotalMonthly)
+        totalsRow.add(grandTotalTerm)
+        rows.add(totalsRow)
+
+        return createXlsx("Term Report", rows)
+    }
+
+    fun exportTermReportToCsv(
+        termTitle: String,
+        year: Int,
+        monthLabels: List<String>,
+        memberRows: List<TermMemberExportRow>,
+        grandTotalMonthly: List<Long>,
+        grandTotalTerm: Long,
+        expectedRevenue: Long,
+        collectedRevenue: Long,
+        estimatedArrears: Long
+    ): String {
+        val lines = mutableListOf<String>()
+        lines.add(csv("Financial & Contribution Reports - Term Report"))
+        lines.add(listOf("Term:", "$termTitle $year").joinToString(",") { csv(it) })
+        lines.add("")
+        lines.add(listOf("SUMMARY METRICS", "AMOUNT (TZS)").joinToString(",") { csv(it) })
+        lines.add(listOf("Expected Revenue", expectedRevenue.toString()).joinToString(",") { csv(it) })
+        lines.add(listOf("Term Collected", collectedRevenue.toString()).joinToString(",") { csv(it) })
+        lines.add(listOf("Estimated Arrears", estimatedArrears.toString()).joinToString(",") { csv(it) })
+        lines.add("")
+        lines.add(csv("MEMBER CONTRIBUTIONS GRID ($termTitle $year)"))
+
+        val header = mutableListOf("Member No", "Full Name")
+        header.addAll(monthLabels)
+        header.add("Total (TZS)")
+        lines.add(header.joinToString(",") { csv(it) })
+
+        memberRows.forEach { m ->
+            val row = mutableListOf(m.memberNo, m.fullName)
+            row.addAll(m.monthlyAmounts.map { it.toString() })
+            row.add(m.totalAmount.toString())
+            lines.add(row.joinToString(",") { csv(it) })
+        }
+
+        val totalsRow = mutableListOf("GRAND TOTAL", "")
+        totalsRow.addAll(grandTotalMonthly.map { it.toString() })
+        totalsRow.add(grandTotalTerm.toString())
+        lines.add(totalsRow.joinToString(",") { csv(it) })
+
+        return lines.joinToString("\r\n") + "\r\n"
+    }
+
+    fun exportMonthlyReportToXlsx(
+        periodTitle: String,
+        collectionsTotal: Long,
+        expensesTotal: Long,
+        netMovement: Long,
+        expectedRevenue: Long,
+        estimatedArrears: Long,
+        memberCount: Int,
+        batchBreakdown: Map<String, Long>,
+        arrearsMembers: List<ArrearsMemberExportRow>
+    ): ByteArray {
+        val rows = mutableListOf<List<Any?>>()
+        rows.add(listOf("Financial & Contribution Reports - Monthly Report"))
+        rows.add(listOf("Period:", periodTitle))
+        rows.add(listOf())
+        rows.add(listOf("FINANCIAL SUMMARY", "AMOUNT (TZS)"))
+        rows.add(listOf("Collections Total", collectionsTotal))
+        rows.add(listOf("Expenses Total", expensesTotal))
+        rows.add(listOf("Net Movement", netMovement))
+        rows.add(listOf("Expected Contributions", expectedRevenue))
+        rows.add(listOf("Estimated Arrears", estimatedArrears))
+        rows.add(listOf("Members Count", memberCount))
+        rows.add(listOf())
+
+        if (batchBreakdown.isNotEmpty()) {
+            rows.add(listOf("BATCH COLLECTION BREAKDOWN"))
+            rows.add(listOf("Batch Year", "Total Collected (TZS)"))
+            batchBreakdown.forEach { (bYear, amt) ->
+                rows.add(listOf("Batch $bYear", amt))
+            }
+            rows.add(listOf())
+        }
+
+        if (arrearsMembers.isNotEmpty()) {
+            rows.add(listOf("MEMBERS IN ARREARS ($periodTitle)"))
+            rows.add(listOf("Member No", "Full Name", "Phone", "Status"))
+            arrearsMembers.forEach { m ->
+                rows.add(listOf(m.memberNo, m.fullName, m.phone, m.status))
+            }
+        }
+
+        return createXlsx("Monthly Report", rows)
+    }
+
+    fun exportMonthlyReportToCsv(
+        periodTitle: String,
+        collectionsTotal: Long,
+        expensesTotal: Long,
+        netMovement: Long,
+        expectedRevenue: Long,
+        estimatedArrears: Long,
+        memberCount: Int,
+        batchBreakdown: Map<String, Long>,
+        arrearsMembers: List<ArrearsMemberExportRow>
+    ): String {
+        val lines = mutableListOf<String>()
+        lines.add(csv("Financial & Contribution Reports - Monthly Report"))
+        lines.add(listOf("Period:", periodTitle).joinToString(",") { csv(it) })
+        lines.add("")
+        lines.add(listOf("FINANCIAL SUMMARY", "AMOUNT (TZS)").joinToString(",") { csv(it) })
+        lines.add(listOf("Collections Total", collectionsTotal.toString()).joinToString(",") { csv(it) })
+        lines.add(listOf("Expenses Total", expensesTotal.toString()).joinToString(",") { csv(it) })
+        lines.add(listOf("Net Movement", netMovement.toString()).joinToString(",") { csv(it) })
+        lines.add(listOf("Expected Contributions", expectedRevenue.toString()).joinToString(",") { csv(it) })
+        lines.add(listOf("Estimated Arrears", estimatedArrears.toString()).joinToString(",") { csv(it) })
+        lines.add(listOf("Members Count", memberCount.toString()).joinToString(",") { csv(it) })
+        lines.add("")
+
+        if (batchBreakdown.isNotEmpty()) {
+            lines.add(csv("BATCH COLLECTION BREAKDOWN"))
+            lines.add(listOf("Batch Year", "Total Collected (TZS)").joinToString(",") { csv(it) })
+            batchBreakdown.forEach { (bYear, amt) ->
+                lines.add(listOf("Batch $bYear", amt.toString()).joinToString(",") { csv(it) })
+            }
+            lines.add("")
+        }
+
+        if (arrearsMembers.isNotEmpty()) {
+            lines.add(csv("MEMBERS IN ARREARS ($periodTitle)"))
+            lines.add(listOf("Member No", "Full Name", "Phone", "Status").joinToString(",") { csv(it) })
+            arrearsMembers.forEach { m ->
+                lines.add(listOf(m.memberNo, m.fullName, m.phone, m.status).joinToString(",") { csv(it) })
+            }
+        }
+
+        return lines.joinToString("\r\n") + "\r\n"
+    }
+
+    fun exportAnnualReportToXlsx(
+        year: Int,
+        collectionsTotal: Long,
+        expensesTotal: Long,
+        netMovement: Long,
+        expectedRevenue: Long,
+        estimatedShortfall: Long,
+        monthlyBreakdown: Map<String, Long>,
+        arrearsMembers: List<ArrearsMemberExportRow>
+    ): ByteArray {
+        val rows = mutableListOf<List<Any?>>()
+        rows.add(listOf("Financial & Contribution Reports - Annual Report"))
+        rows.add(listOf("Year:", year))
+        rows.add(listOf())
+        rows.add(listOf("FINANCIAL SUMMARY", "AMOUNT (TZS)"))
+        rows.add(listOf("Annual Collections Total", collectionsTotal))
+        rows.add(listOf("Annual Expenses Total", expensesTotal))
+        rows.add(listOf("Annual Net Movement", netMovement))
+        rows.add(listOf("Expected Revenue", expectedRevenue))
+        rows.add(listOf("Estimated Shortfall", estimatedShortfall))
+        rows.add(listOf())
+
+        rows.add(listOf("MONTHLY COLLECTIONS BREAKDOWN ($year)"))
+        rows.add(listOf("Month", "Amount (TZS)"))
+        monthlyBreakdown.forEach { (monthName, amt) ->
+            rows.add(listOf(monthName, amt))
+        }
+        rows.add(listOf())
+
+        if (arrearsMembers.isNotEmpty()) {
+            rows.add(listOf("MEMBERS IN ANNUAL ARREARS ($year)"))
+            rows.add(listOf("Member No", "Full Name", "Phone", "Total Paid (TZS)", "Shortfall (TZS)"))
+            arrearsMembers.forEach { m ->
+                rows.add(listOf(m.memberNo, m.fullName, m.phone, m.amountPaid, m.shortfall))
+            }
+        }
+
+        return createXlsx("Annual Report $year", rows)
+    }
+
+    fun exportAnnualReportToCsv(
+        year: Int,
+        collectionsTotal: Long,
+        expensesTotal: Long,
+        netMovement: Long,
+        expectedRevenue: Long,
+        estimatedShortfall: Long,
+        monthlyBreakdown: Map<String, Long>,
+        arrearsMembers: List<ArrearsMemberExportRow>
+    ): String {
+        val lines = mutableListOf<String>()
+        lines.add(csv("Financial & Contribution Reports - Annual Report"))
+        lines.add(listOf("Year:", year.toString()).joinToString(",") { csv(it) })
+        lines.add("")
+        lines.add(listOf("FINANCIAL SUMMARY", "AMOUNT (TZS)").joinToString(",") { csv(it) })
+        lines.add(listOf("Annual Collections Total", collectionsTotal.toString()).joinToString(",") { csv(it) })
+        lines.add(listOf("Annual Expenses Total", expensesTotal.toString()).joinToString(",") { csv(it) })
+        lines.add(listOf("Annual Net Movement", netMovement.toString()).joinToString(",") { csv(it) })
+        lines.add(listOf("Expected Revenue", expectedRevenue.toString()).joinToString(",") { csv(it) })
+        lines.add(listOf("Estimated Shortfall", estimatedShortfall.toString()).joinToString(",") { csv(it) })
+        lines.add("")
+
+        lines.add(csv("MONTHLY COLLECTIONS BREAKDOWN ($year)"))
+        lines.add(listOf("Month", "Amount (TZS)").joinToString(",") { csv(it) })
+        monthlyBreakdown.forEach { (monthName, amt) ->
+            lines.add(listOf(monthName, amt.toString()).joinToString(",") { csv(it) })
+        }
+        lines.add("")
+
+        if (arrearsMembers.isNotEmpty()) {
+            lines.add(csv("MEMBERS IN ANNUAL ARREARS ($year)"))
+            lines.add(listOf("Member No", "Full Name", "Phone", "Total Paid (TZS)", "Shortfall (TZS)").joinToString(",") { csv(it) })
+            arrearsMembers.forEach { m ->
+                lines.add(listOf(m.memberNo, m.fullName, m.phone, m.amountPaid.toString(), m.shortfall.toString()).joinToString(",") { csv(it) })
+            }
+        }
+
+        return lines.joinToString("\r\n") + "\r\n"
+    }
+
+    fun createXlsx(sheetName: String = "Report", rows: List<List<Any?>>): ByteArray {
+        val baos = java.io.ByteArrayOutputStream()
+        java.util.zip.ZipOutputStream(baos).use { zos ->
+            val typesXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>""".trimIndent()
+            zos.putNextEntry(java.util.zip.ZipEntry("[Content_Types].xml"))
+            zos.write(typesXml.toByteArray(Charsets.UTF_8))
+            zos.closeEntry()
+
+            val relsXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>""".trimIndent()
+            zos.putNextEntry(java.util.zip.ZipEntry("_rels/.rels"))
+            zos.write(relsXml.toByteArray(Charsets.UTF_8))
+            zos.closeEntry()
+
+            val wbRelsXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>""".trimIndent()
+            zos.putNextEntry(java.util.zip.ZipEntry("xl/_rels/workbook.xml.rels"))
+            zos.write(wbRelsXml.toByteArray(Charsets.UTF_8))
+            zos.closeEntry()
+
+            val safeName = sheetName.replace(Regex("[^a-zA-Z0-9 ]"), "").ifBlank { "Sheet1" }
+            val workbookXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="$safeName" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>""".trimIndent()
+            zos.putNextEntry(java.util.zip.ZipEntry("xl/workbook.xml"))
+            zos.write(workbookXml.toByteArray(Charsets.UTF_8))
+            zos.closeEntry()
+
+            val stylesXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+  <fills count="1"><fill><patternFill patternType="none"/></fill></fills>
+  <borders count="1"><border><left/><right/><top/><bottom/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
+</styleSheet>""".trimIndent()
+            zos.putNextEntry(java.util.zip.ZipEntry("xl/styles.xml"))
+            zos.write(stylesXml.toByteArray(Charsets.UTF_8))
+            zos.closeEntry()
+
+            zos.putNextEntry(java.util.zip.ZipEntry("xl/worksheets/sheet1.xml"))
+            val sb = StringBuilder()
+            sb.append("""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>""")
+            sb.append("""<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>""")
+            rows.forEachIndexed { rIdx, row ->
+                val rowNum = rIdx + 1
+                sb.append("""<row r="$rowNum">""")
+                row.forEachIndexed { cIdx, cell ->
+                    if (cell != null) {
+                        val colName = getExcelColName(cIdx) + rowNum
+                        when (cell) {
+                            is Number -> sb.append("""<c r="$colName"><v>$cell</v></c>""")
+                            else -> {
+                                val esc = escapeXml(cell.toString())
+                                sb.append("""<c r="$colName" t="inlineStr"><is><t>$esc</t></is></c>""")
+                            }
+                        }
+                    }
+                }
+                sb.append("""</row>""")
+            }
+            sb.append("""</sheetData></worksheet>""")
+            zos.write(sb.toString().toByteArray(Charsets.UTF_8))
+            zos.closeEntry()
+        }
+        return baos.toByteArray()
+    }
+
+    private fun getExcelColName(col: Int): String {
+        var c = col
+        val sb = StringBuilder()
+        while (c >= 0) {
+            sb.insert(0, ('A'.code + (c % 26)).toChar())
+            c = (c / 26) - 1
+        }
+        return sb.toString()
+    }
+
+    private fun escapeXml(str: String): String =
+        str.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+            .replace("'", "&apos;")
 
     /**
      * What an import WOULD do. Building a plan reads the file and the database but writes nothing,

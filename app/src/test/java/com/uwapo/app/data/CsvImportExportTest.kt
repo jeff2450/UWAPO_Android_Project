@@ -19,15 +19,20 @@ class CsvImportExportTest {
         val payments = mutableListOf<PaymentEntity>()
 
         override fun observeMembers(): Flow<List<MemberEntity>> = flowOf(members.values.toList())
+        override fun observeBatches(): Flow<List<BatchEntity>> = flowOf(emptyList())
+        override suspend fun getAllBatchesSync(): List<BatchEntity> = emptyList()
         override fun observePayments(): Flow<List<PaymentEntity>> = flowOf(payments)
         override fun observeExpenses(): Flow<List<ExpenseEntity>> = flowOf(emptyList())
         override suspend fun getMember(id: String): MemberEntity? = members[id]
-        override suspend fun getMemberByNumber(memberNo: String): MemberEntity? = members.values.find { it.memberNo == memberNo }
+        override suspend fun getMemberByNumber(batchYear: Int, memberNo: String): MemberEntity? = members.values.find { it.memberNo == memberNo }
+        fun getMemberByNumber(memberNo: String): MemberEntity? = members.values.find { it.memberNo == memberNo }
         override suspend fun getAllMembersSync(): List<MemberEntity> = members.values.toList()
+        override suspend fun getMembersForBatchSync(batchYear: Int): List<MemberEntity> = members.values.filter { it.batchYear == batchYear }
         override suspend fun getPaymentByRequestId(requestId: String): PaymentEntity? = payments.find { it.requestId == requestId }
         override fun observeMemberPayments(memberId: String): Flow<List<PaymentEntity>> = flowOf(payments.filter { it.memberId == memberId })
         override suspend fun getMemberPaymentsSync(memberId: String): List<PaymentEntity> = payments.filter { it.memberId == memberId }
 
+        override suspend fun insertBatchIgnore(batch: BatchEntity): Long = 1L
         override suspend fun insertMember(member: MemberEntity) { members[member.id] = member }
         override suspend fun insertMemberIgnore(member: MemberEntity): Long {
             return if (members.values.any { it.memberNo == member.memberNo }) -1L else {
@@ -40,11 +45,18 @@ class CsvImportExportTest {
             payments.add(payment)
             return 1L
         }
+        override suspend fun deleteImportedPaymentsForYear(year: Int) { payments.removeAll { it.periodYear == year && it.receiptNo.startsWith("IMPORT-") } }
         override suspend fun upsertMember(member: MemberEntity) { members[member.id] = member }
         override suspend fun upsertPayment(payment: PaymentEntity) { payments.add(payment) }
         override suspend fun insertExpense(expense: ExpenseEntity) {}
         override suspend fun upsertExpense(expense: ExpenseEntity) {}
         override suspend fun updateMemberProfile(id: String, phone: String, status: String, notes: String) {}
+        override suspend fun updateMemberDetails(id: String, memberNo: String, fullName: String, phone: String, status: String, notes: String) {}
+        override suspend fun deletePaymentsForBatch(batchYear: Int) {}
+        override suspend fun deleteMembersForBatch(batchYear: Int) {}
+        override suspend fun deleteBatchRow(batchYear: Int) {}
+        override suspend fun getMismatchedPaymentsCount(): Int = 0
+        override suspend fun deleteMismatchedPayments(): Int = 0
         override suspend fun deletePaymentsForMember(memberId: String) {
             payments.removeAll { it.memberId == memberId }
         }
@@ -62,7 +74,7 @@ class CsvImportExportTest {
         override suspend fun deleteExpense(id: String) {}
         override fun observeMonthlyTotal(year: Int, month: Int): Flow<Long> = flowOf(0L)
         override fun observeYearlyTotal(year: Int): Flow<Long> = flowOf(0L)
-        override fun observeActiveMemberCount(): Flow<Int> = flowOf(members.size)
+        override fun observeActiveMemberCount(batchYear: Int): Flow<Int> = flowOf(members.size)
         override fun observeLifetimeTotal(): Flow<Long> = flowOf(0L)
         override fun observePaidExpensesTotal(): Flow<Long> = flowOf(0L)
     }
@@ -150,5 +162,30 @@ class CsvImportExportTest {
             zos.closeEntry()
         }
         return baos.toByteArray()
+    }
+
+    @Test
+    fun testXlsxExport() {
+        val member = MemberEntity(id = "1", memberNo = "M101", fullName = "Amina Salum", phone = "0712345678", batchYear = 2025)
+        val payment = PaymentEntity(id = "p1", memberId = "1", amountTzs = 10000L, periodYear = 2025, periodMonth = 1, receiptNo = "REC001")
+        val xlsxBytes = CsvImportExport.exportToXlsx(listOf(member), listOf(payment))
+        org.junit.Assert.assertTrue(xlsxBytes.isNotEmpty())
+    }
+
+    @Test
+    fun testTermReportXlsxExport() {
+        val row = CsvImportExport.TermMemberExportRow("M101", "Amina Salum", listOf(10000L, 10000L, 0L, 0L, 0L, 0L), 20000L)
+        val bytes = CsvImportExport.exportTermReportToXlsx(
+            termTitle = "Term 1 (Jan - Jun)",
+            year = 2025,
+            monthLabels = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun"),
+            memberRows = listOf(row),
+            grandTotalMonthly = listOf(10000L, 10000L, 0L, 0L, 0L, 0L),
+            grandTotalTerm = 20000L,
+            expectedRevenue = 60000L,
+            collectedRevenue = 20000L,
+            estimatedArrears = 40000L
+        )
+        org.junit.Assert.assertTrue(bytes.isNotEmpty())
     }
 }

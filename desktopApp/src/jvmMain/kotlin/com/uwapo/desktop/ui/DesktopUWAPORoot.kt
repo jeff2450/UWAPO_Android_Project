@@ -272,7 +272,7 @@ fun DesktopUWAPORoot(
     }
 
     selectedMemberForProfile?.let { m ->
-        val memberPayments = payments.filter { it.memberId == m.id }
+        val memberPayments = payments.filter { it.memberId == m.id && it.periodYear == m.batchYear }
         DesktopMemberProfileDialog(
             member = m,
             payments = memberPayments,
@@ -643,7 +643,7 @@ private fun DesktopMembersView(
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(m.fullName, fontWeight = FontWeight.Bold)
-                                Text("${m.memberNo} · Batch ${m.batchYear} · ${m.phone.ifBlank { "No Phone" }}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Batch ${m.batchYear}${if (m.phone.isNotBlank()) " · ${m.phone}" else ""}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Text(m.status.uppercase(), style = MaterialTheme.typography.labelSmall)
                             IconButton(onClick = { onRequestDeleteMember(m) }) {
@@ -980,9 +980,162 @@ private fun DesktopReportsView(
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
                 onClick = {
-                    val file = saveFileDialog("Save CSV Export", "uwapo-export-${System.currentTimeMillis()}.csv")
+                    val defaultName = when (selectedReportType) {
+                        0 -> "uwapo-monthly-report-${selectedYear}.xlsx"
+                        1 -> "uwapo-annual-report-${selectedYear}.xlsx"
+                        else -> "uwapo-term-report-${selectedYear}-term${selectedTerm + 1}.xlsx"
+                    }
+                    val file = saveFileDialog(if (language == "sw") "Hifadhi Ripoti ya Excel (.xlsx)" else "Save Excel Report (.xlsx)", defaultName)
                     if (file != null) {
-                        val csvContent = DesktopCsvImportExport.export(members, payments)
+                        val bytes = when (selectedReportType) {
+                            0 -> {
+                                val periodTitle = "$selectedYear"
+                                val collectionsTotal = validPayments.filter { it.periodYear == selectedYear }.sumOf { it.amountTzs }
+                                val monthlyApprovedExp = expenses.filter { (it.status == "paid" || it.status == "approved") }
+                                val expensesTotal = monthlyApprovedExp.sumOf { it.amountTzs }
+                                val netMovement = collectionsTotal - expensesTotal
+                                val batchBreakdown = validPayments.filter { it.periodYear == selectedYear }.groupBy { it.periodYear.toString() }.mapValues { e -> e.value.sumOf { it.amountTzs } }
+                                val arrearsList = activeMembers.filter { m -> validPayments.filter { p -> p.memberId == m.id && p.periodYear == selectedYear }.sumOf { it.amountTzs } < 10000L }.map {
+                                    DesktopCsvImportExport.ArrearsMemberExportRow(it.memberNo, it.fullName, it.phone, it.status)
+                                }
+                                DesktopCsvImportExport.exportMonthlyReportToXlsx(
+                                    periodTitle = periodTitle,
+                                    collectionsTotal = collectionsTotal,
+                                    expensesTotal = expensesTotal,
+                                    netMovement = netMovement,
+                                    expectedRevenue = activeCount.toLong() * 10000L,
+                                    estimatedArrears = (activeCount.toLong() * 10000L - collectionsTotal).coerceAtLeast(0L),
+                                    memberCount = activeCount,
+                                    batchBreakdown = batchBreakdown,
+                                    arrearsMembers = arrearsList
+                                )
+                            }
+                            1 -> {
+                                val annualPayments = validPayments.filter { it.periodYear == selectedYear }
+                                val collectionsTotal = annualPayments.sumOf { it.amountTzs }
+                                val annualApprovedExpenses = expenses.filter { (it.status == "paid" || it.status == "approved") }
+                                val expensesTotal = annualApprovedExpenses.sumOf { it.amountTzs }
+                                val netMovement = collectionsTotal - expensesTotal
+                                val expectedRev = activeCount.toLong() * 120000L
+                                val shortfall = (expectedRev - collectionsTotal).coerceAtLeast(0L)
+                                val monthNames = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+                                val monthlyBreakdown = (1..12).associate { m -> monthNames[m - 1] to annualPayments.filter { p -> p.periodMonth == m }.sumOf { it.amountTzs } }
+                                val arrearsList = activeMembers.filter { m -> annualPayments.filter { p -> p.memberId == m.id }.sumOf { it.amountTzs } < 120000L }.map {
+                                    val paid = annualPayments.filter { p -> p.memberId == it.id }.sumOf { it.amountTzs }
+                                    DesktopCsvImportExport.ArrearsMemberExportRow(it.memberNo, it.fullName, it.phone, it.status, paid, (120000L - paid).coerceAtLeast(0L))
+                                }
+                                DesktopCsvImportExport.exportAnnualReportToXlsx(
+                                    year = selectedYear,
+                                    collectionsTotal = collectionsTotal,
+                                    expensesTotal = expensesTotal,
+                                    netMovement = netMovement,
+                                    expectedRevenue = expectedRev,
+                                    estimatedShortfall = shortfall,
+                                    monthlyBreakdown = monthlyBreakdown,
+                                    arrearsMembers = arrearsList
+                                )
+                            }
+                            else -> {
+                                val rows = termMemberRows.map {
+                                    DesktopCsvImportExport.TermMemberExportRow(it.memberNo, it.fullName, it.monthlyAmounts, it.totalAmount)
+                                }
+                                DesktopCsvImportExport.exportTermReportToXlsx(
+                                    termTitle = termTitle,
+                                    year = selectedYear,
+                                    monthLabels = termMonthLabels,
+                                    memberRows = rows,
+                                    grandTotalMonthly = grandTotalMonthly,
+                                    grandTotalTerm = grandTotalTerm,
+                                    expectedRevenue = expectedTermRevenue,
+                                    collectedRevenue = collectedTermRevenue,
+                                    estimatedArrears = estimatedArrears
+                                )
+                            }
+                        }
+                        file.writeBytes(bytes)
+                    }
+                },
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.FileDownload, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text(if (language == "sw") "Pakua Excel (.xlsx)" else "Export Excel (.xlsx)")
+            }
+
+            OutlinedButton(
+                onClick = {
+                    val defaultName = when (selectedReportType) {
+                        0 -> "uwapo-monthly-report-${selectedYear}.csv"
+                        1 -> "uwapo-annual-report-${selectedYear}.csv"
+                        else -> "uwapo-term-report-${selectedYear}-term${selectedTerm + 1}.csv"
+                    }
+                    val file = saveFileDialog(if (language == "sw") "Hifadhi Ripoti ya CSV" else "Save CSV Report", defaultName)
+                    if (file != null) {
+                        val csvContent = when (selectedReportType) {
+                            0 -> {
+                                val periodTitle = "$selectedYear"
+                                val collectionsTotal = validPayments.filter { it.periodYear == selectedYear }.sumOf { it.amountTzs }
+                                val monthlyApprovedExp = expenses.filter { (it.status == "paid" || it.status == "approved") }
+                                val expensesTotal = monthlyApprovedExp.sumOf { it.amountTzs }
+                                val netMovement = collectionsTotal - expensesTotal
+                                val batchBreakdown = validPayments.filter { it.periodYear == selectedYear }.groupBy { it.periodYear.toString() }.mapValues { e -> e.value.sumOf { it.amountTzs } }
+                                val arrearsList = activeMembers.filter { m -> validPayments.filter { p -> p.memberId == m.id && p.periodYear == selectedYear }.sumOf { it.amountTzs } < 10000L }.map {
+                                    DesktopCsvImportExport.ArrearsMemberExportRow(it.memberNo, it.fullName, it.phone, it.status)
+                                }
+                                DesktopCsvImportExport.exportMonthlyReportToCsv(
+                                    periodTitle = periodTitle,
+                                    collectionsTotal = collectionsTotal,
+                                    expensesTotal = expensesTotal,
+                                    netMovement = netMovement,
+                                    expectedRevenue = activeCount.toLong() * 10000L,
+                                    estimatedArrears = (activeCount.toLong() * 10000L - collectionsTotal).coerceAtLeast(0L),
+                                    memberCount = activeCount,
+                                    batchBreakdown = batchBreakdown,
+                                    arrearsMembers = arrearsList
+                                )
+                            }
+                            1 -> {
+                                val annualPayments = validPayments.filter { it.periodYear == selectedYear }
+                                val collectionsTotal = annualPayments.sumOf { it.amountTzs }
+                                val annualApprovedExpenses = expenses.filter { (it.status == "paid" || it.status == "approved") }
+                                val expensesTotal = annualApprovedExpenses.sumOf { it.amountTzs }
+                                val netMovement = collectionsTotal - expensesTotal
+                                val expectedRev = activeCount.toLong() * 120000L
+                                val shortfall = (expectedRev - collectionsTotal).coerceAtLeast(0L)
+                                val monthNames = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+                                val monthlyBreakdown = (1..12).associate { m -> monthNames[m - 1] to annualPayments.filter { p -> p.periodMonth == m }.sumOf { it.amountTzs } }
+                                val arrearsList = activeMembers.filter { m -> annualPayments.filter { p -> p.memberId == m.id }.sumOf { it.amountTzs } < 120000L }.map {
+                                    val paid = annualPayments.filter { p -> p.memberId == it.id }.sumOf { it.amountTzs }
+                                    DesktopCsvImportExport.ArrearsMemberExportRow(it.memberNo, it.fullName, it.phone, it.status, paid, (120000L - paid).coerceAtLeast(0L))
+                                }
+                                DesktopCsvImportExport.exportAnnualReportToCsv(
+                                    year = selectedYear,
+                                    collectionsTotal = collectionsTotal,
+                                    expensesTotal = expensesTotal,
+                                    netMovement = netMovement,
+                                    expectedRevenue = expectedRev,
+                                    estimatedShortfall = shortfall,
+                                    monthlyBreakdown = monthlyBreakdown,
+                                    arrearsMembers = arrearsList
+                                )
+                            }
+                            else -> {
+                                val rows = termMemberRows.map {
+                                    DesktopCsvImportExport.TermMemberExportRow(it.memberNo, it.fullName, it.monthlyAmounts, it.totalAmount)
+                                }
+                                DesktopCsvImportExport.exportTermReportToCsv(
+                                    termTitle = termTitle,
+                                    year = selectedYear,
+                                    monthLabels = termMonthLabels,
+                                    memberRows = rows,
+                                    grandTotalMonthly = grandTotalMonthly,
+                                    grandTotalTerm = grandTotalTerm,
+                                    expectedRevenue = expectedTermRevenue,
+                                    collectedRevenue = collectedTermRevenue,
+                                    estimatedArrears = estimatedArrears
+                                )
+                            }
+                        }
                         file.writeText(csvContent, Charsets.UTF_8)
                     }
                 },
@@ -1130,11 +1283,9 @@ private fun DesktopRecordPaymentDialog(
         title = { Text(if (language == "sw") "Rekodi Mchango wa Mwanachama" else "Record Member Contribution") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(if (language == "sw") "Chagua Mwanachama:" else "Select Member:", fontWeight = FontWeight.Bold)
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    items(members) { m ->
-                        FilterChip(selected = selectedMemberId == m.id, onClick = { selectedMemberId = m.id }, label = { Text(m.fullName) })
-                    }
+                val selectedMember = members.firstOrNull { it.id == selectedMemberId }
+                if (selectedMember != null) {
+                    Text(selectedMember.fullName, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(yrStr, { yrStr = it; error = "" }, label = { Text(if (language == "sw") "Mwaka" else "Year") }, modifier = Modifier.weight(1f))
@@ -1203,7 +1354,7 @@ private fun DesktopMemberProfileDialog(
     var status by remember { mutableStateOf(member.status) }
     var notes by remember { mutableStateOf(member.notes) }
 
-    val validPayments = remember(payments) { payments.filter { !it.syncStatus.startsWith("reversed") } }
+    val validPayments = remember(payments, member.id, member.batchYear) { payments.filter { it.memberId == member.id && it.periodYear == member.batchYear && !it.syncStatus.startsWith("reversed") } }
     val totalPaid = validPayments.sumOf { it.amountTzs }
 
     AlertDialog(

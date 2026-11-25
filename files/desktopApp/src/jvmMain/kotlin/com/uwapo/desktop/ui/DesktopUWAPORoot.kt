@@ -1106,12 +1106,7 @@ private fun DesktopRecordPaymentDialog(
         title = { Text(if (language == "sw") "Rekodi Mchango wa Mwanachama" else "Record Member Contribution") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(if (language == "sw") "Chagua Mwanachama:" else "Select Member:", fontWeight = FontWeight.Bold)
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    items(members) { m ->
-                        FilterChip(selected = selectedMemberId == m.id, onClick = { selectedMemberId = m.id }, label = { Text(m.fullName) })
-                    }
-                }
+                
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(yrStr, { yrStr = it; error = "" }, label = { Text(if (language == "sw") "Mwaka" else "Year") }, modifier = Modifier.weight(1f))
                     OutlinedTextField(moStr, { moStr = it; error = "" }, label = { Text(if (language == "sw") "Mwezi (1-12)" else "Month (1-12)") }, modifier = Modifier.weight(1f))
@@ -1411,3 +1406,4 @@ private fun LazyColumnWithScrollbar(
         )
     }
 }
+
