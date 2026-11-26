@@ -261,4 +261,20 @@
     <string name="member_name_col">Jina Bufuli na Namba</string>
     <string name="total_tzs">Jumla (TZS)</string>
     <string name="generate_landscape_pdf">Tengeneza PDF (A4 Landscape)</string>
+
+    <!-- Club Finance New Strings (v6) -->
+    <string name="budgets">Bajeti</string>
+    <string name="budget_manager_title">Bajeti za Vipengele</string>
+    <string name="current_budgets">Bajeti za Sasa</string>
+    <string name="add_budget">Ongeza / Sasisha Bajeti</string>
+    <string name="budget_limit_tzs">Kikomo cha Bajeti (TZS)</string>
+    <string name="btn_save_budget">Hifadhi Bajeti</string>
+    <string name="budget_overview">Muhtasari wa Bajeti</string>
+    <string name="approved_total">Imeidhinishwa / Imelipwa</string>
+    <string name="pending_total">Inasubiri Idhini</string>
+    <string name="search_expenses">Tafuta matumizi…</string>
+    <string name="label_account">Akaunti</string>
+    <string name="label_expense_date">Tarehe (hiari, mfano 15/06/2026)</string>
+    <string name="export_expense_register_csv">Pakua Daftari la Matumizi (CSV)</string>
+    <string name="export_expense_register_xlsx">Pakua Daftari la Matumizi (Excel)</string>
 </resources>

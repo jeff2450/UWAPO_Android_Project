@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -18,11 +19,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Assessment
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Brightness4
 import androidx.compose.material.icons.filled.Brightness7
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
@@ -125,6 +128,8 @@ fun UWAPORoot(
     val activeCount by dao.observeActiveMemberCount(currentYear).collectAsState(initial = 0)
     val lifetimeTotal by dao.observeLifetimeTotal().collectAsState(initial = 0L)
     val expensesTotal by dao.observePaidExpensesTotal().collectAsState(initial = 0L)
+    val currentYearForBudget = remember { java.util.Calendar.getInstance().get(java.util.Calendar.YEAR) }
+    val budgets by dao.observeBudgetsForYear(currentYearForBudget).collectAsState(initial = emptyList())
 
     var selectedTab by remember { mutableStateOf(Tab.HOME) }
     var showAddMember by remember { mutableStateOf(false) }
@@ -392,7 +397,9 @@ fun UWAPORoot(
                 }
             )
             Tab.FINANCE -> FinanceScreen(
-                Modifier.padding(padding), expenses,
+                modifier = Modifier.padding(padding),
+                expenses = expenses,
+                budgets = budgets,
                 onSelectExpense = { selectedExpenseForDetail = it },
                 onApprove = { expense ->
                     scope.launch {
@@ -400,7 +407,14 @@ fun UWAPORoot(
                         Toast.makeText(context, context.getString(R.string.toast_expense_paid), Toast.LENGTH_LONG).show()
                     }
                 },
-                onDeleteExpense = { expenseToDelete = it }
+                onDeleteExpense = { expenseToDelete = it },
+                onSaveBudget = { category, limitTzs ->
+                    scope.launch {
+                        val budgetId = java.util.UUID.nameUUIDFromBytes("BUDGET:$currentYearForBudget:$category".toByteArray()).toString()
+                        dao.upsertBudget(com.uwapo.app.data.BudgetEntity(budgetId, currentYearForBudget, category, limitTzs))
+                    }
+                },
+                onDeleteBudget = { budget -> scope.launch { dao.deleteBudget(budget.id) } }
             )
             Tab.REPORTS -> ReportsScreen(
                 modifier = Modifier.padding(padding),
@@ -631,10 +645,19 @@ fun UWAPORoot(
         )
     }
     if (showExpense) {
-        AddExpenseDialog(onDismiss = { showExpense = false }, onSave = { category, description, amount ->
+        AddExpenseDialog(onDismiss = { showExpense = false }, onSave = { category, description, amount, accountName, dateLabel ->
             scope.launch {
                 try {
-                    dao.insertExpense(ExpenseEntity(UUID.randomUUID().toString(), category, description, amount))
+                    dao.insertExpense(
+                        ExpenseEntity(
+                            id = UUID.randomUUID().toString(),
+                            category = category,
+                            description = description,
+                            amountTzs = amount,
+                            accountName = accountName,
+                            expenseDateLabel = dateLabel
+                        )
+                    )
                     showExpense = false
                     Toast.makeText(context, context.getString(R.string.toast_expense_saved), Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
@@ -1762,6 +1785,13 @@ private fun ReportsScreen(
             }
         }
     }
+    val monthlyPeriodExpenses = remember(expenses, selectedYear, selectedMonth) {
+        expenses.filter { exp ->
+            val c = Calendar.getInstance()
+            c.timeInMillis = exp.expenseDate
+            c.get(Calendar.YEAR) == selectedYear && (c.get(Calendar.MONTH) + 1) == selectedMonth
+        }
+    }
     val monthlyExpensesTotal = remember(monthlyApprovedExpenses) { monthlyApprovedExpenses.sumOf { it.amountTzs } }
     val monthlyNetMovement = monthlyCollections - monthlyExpensesTotal
 
@@ -1792,6 +1822,13 @@ private fun ReportsScreen(
                 c.timeInMillis = exp.expenseDate
                 c.get(Calendar.YEAR) == selectedYear
             }
+        }
+    }
+    val annualPeriodExpenses = remember(expenses, selectedYear) {
+        expenses.filter { exp ->
+            val c = Calendar.getInstance()
+            c.timeInMillis = exp.expenseDate
+            c.get(Calendar.YEAR) == selectedYear
         }
     }
     val annualExpensesTotal = remember(annualApprovedExpenses) { annualApprovedExpenses.sumOf { it.amountTzs } }
@@ -1992,7 +2029,8 @@ private fun ReportsScreen(
                                 estimatedArrears = estimatedMonthlyArrears,
                                 memberCount = activeCount,
                                 batchBreakdown = monthlyBatchBreakdown,
-                                arrearsMembers = arrearsList
+                                arrearsMembers = arrearsList,
+                                expenses = monthlyPeriodExpenses
                             )
                         }
                         1 -> {
@@ -2008,7 +2046,8 @@ private fun ReportsScreen(
                                 expectedRevenue = expectedAnnual,
                                 estimatedShortfall = estimatedAnnualShortfall,
                                 monthlyBreakdown = annualMonthlyBreakdown,
-                                arrearsMembers = arrearsList
+                                arrearsMembers = arrearsList,
+                                expenses = annualPeriodExpenses
                             )
                         }
                         else -> {
@@ -2062,7 +2101,8 @@ private fun ReportsScreen(
                                 estimatedArrears = estimatedMonthlyArrears,
                                 memberCount = activeCount,
                                 batchBreakdown = monthlyBatchBreakdown,
-                                arrearsMembers = arrearsList
+                                arrearsMembers = arrearsList,
+                                expenses = monthlyPeriodExpenses
                             )
                         }
                         1 -> {
@@ -2078,7 +2118,8 @@ private fun ReportsScreen(
                                 expectedRevenue = expectedAnnual,
                                 estimatedShortfall = estimatedAnnualShortfall,
                                 monthlyBreakdown = annualMonthlyBreakdown,
-                                arrearsMembers = arrearsList
+                                arrearsMembers = arrearsList,
+                                expenses = annualPeriodExpenses
                             )
                         }
                         else -> {
@@ -2137,7 +2178,8 @@ private fun ReportsScreen(
                             activeCount = activeCount,
                             breakdownMap = monthlyBatchBreakdown,
                             breakdownTitle = "Batch Collection Breakdown",
-                            arrearsMembers = monthlyArrearsMembers
+                            arrearsMembers = monthlyArrearsMembers,
+                            expenseItems = monthlyPeriodExpenses
                         )
                     } else {
                         val periodTitle = "Year $selectedYear"
@@ -2154,7 +2196,8 @@ private fun ReportsScreen(
                             activeCount = activeCount,
                             breakdownMap = annualMonthlyBreakdown,
                             breakdownTitle = "Monthly Collection Breakdown",
-                            arrearsMembers = annualArrearsMembers
+                            arrearsMembers = annualArrearsMembers,
+                            expenseItems = annualPeriodExpenses
                         )
                     }
                     PdfGenerator.viewPdf(context, file)
@@ -2386,34 +2429,166 @@ private fun EmptyState(title: String, subtitle: String) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FinanceScreen(
     modifier: Modifier,
     expenses: List<ExpenseEntity>,
+    budgets: List<com.uwapo.app.data.BudgetEntity>,
     onSelectExpense: (ExpenseEntity) -> Unit,
     onApprove: (ExpenseEntity) -> Unit,
-    onDeleteExpense: (ExpenseEntity) -> Unit
+    onDeleteExpense: (ExpenseEntity) -> Unit,
+    onSaveBudget: (category: String, limitTzs: Long) -> Unit,
+    onDeleteBudget: (com.uwapo.app.data.BudgetEntity) -> Unit
 ) {
-    Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
-        Text(stringResource(R.string.club_finance_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Text(stringResource(R.string.finance_approval_note), color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(12.dp))
-        if (expenses.isEmpty()) {
-            EmptyState(stringResource(R.string.no_expenses_recorded), stringResource(R.string.enter_first_expense))
+    var search by remember { mutableStateOf("") }
+    var statusFilter by remember { mutableStateOf("all") }
+    var showBudgetDialog by remember { mutableStateOf(false) }
+
+    val approvedTotal = remember(expenses) { expenses.filter { it.status == "paid" || it.status == "approved" }.sumOf { it.amountTzs } }
+    val pendingTotal = remember(expenses) { expenses.filter { it.status == "pending_approval" }.sumOf { it.amountTzs } }
+
+    val filteredExpenses = remember(expenses, search, statusFilter) {
+        expenses.filter { exp ->
+            val matchSearch = search.isBlank() ||
+                exp.category.contains(search, true) ||
+                exp.description.contains(search, true) ||
+                exp.accountName.contains(search, true)
+            val matchStatus = when (statusFilter) {
+                "pending" -> exp.status == "pending_approval"
+                "approved" -> exp.status == "approved" || exp.status == "paid"
+                "rejected" -> exp.status == "rejected"
+                else -> true
+            }
+            matchSearch && matchStatus
+        }
+    }
+
+    Column(modifier = modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        // Title + Budget button
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.club_finance_title), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            OutlinedButton(onClick = { showBudgetDialog = true }) {
+                Icon(Icons.Default.BarChart, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text(stringResource(R.string.budgets))
+            }
+        }
+        Text(stringResource(R.string.finance_approval_note), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+
+        // Summary row
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Surface(modifier = Modifier.weight(1f), shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)) {
+                Column(Modifier.padding(10.dp)) {
+                    Text(stringResource(R.string.approved_total), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    Text(money(approvedTotal), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+            Surface(modifier = Modifier.weight(1f), shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f)) {
+                Column(Modifier.padding(10.dp)) {
+                    Text(stringResource(R.string.pending_total), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
+                    Text(money(pendingTotal), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.tertiary)
+                }
+            }
+        }
+
+        // Budget progress bars
+        if (budgets.isNotEmpty()) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.budget_overview), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
+                    budgets.forEach { budget ->
+                        val spent = remember(expenses, budget) {
+                            expenses.filter { (it.status == "paid" || it.status == "approved") && it.category == budget.category }.sumOf { it.amountTzs }
+                        }
+                        val progress = if (budget.limitTzs > 0) (spent.toFloat() / budget.limitTzs).coerceIn(0f, 1f) else 0f
+                        val overBudget = spent > budget.limitTzs
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(budget.category, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "${money(spent)} / ${money(budget.limitTzs)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (overBudget) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            LinearProgressIndicator(
+                                progress = { progress },
+                                modifier = Modifier.fillMaxWidth().height(6.dp),
+                                color = if (overBudget) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Search + filter
+        OutlinedTextField(
+            value = search, onValueChange = { search = it },
+            label = { Text(stringResource(R.string.search_expenses)) },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+            trailingIcon = { if (search.isNotEmpty()) IconButton(onClick = { search = "" }) { Icon(Icons.Default.Clear, contentDescription = null) } },
+            modifier = Modifier.fillMaxWidth(), singleLine = true
+        )
+        val filters = listOf("all", "pending", "approved", "rejected")
+        val filterLabels = listOf(
+            stringResource(R.string.all_statuses),
+            stringResource(R.string.status_pending_approval),
+            stringResource(R.string.status_approved),
+            stringResource(R.string.status_rejected)
+        )
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(filters.size) { i ->
+                FilterChip(
+                    selected = statusFilter == filters[i],
+                    onClick = { statusFilter = filters[i] },
+                    label = { Text(filterLabels[i]) }
+                )
+            }
+        }
+
+        if (filteredExpenses.isEmpty()) {
+            EmptyState(
+                stringResource(R.string.no_expenses_recorded),
+                if (search.isBlank()) stringResource(R.string.enter_first_expense) else stringResource(R.string.try_another_search)
+            )
         } else {
+            val sdf = remember { SimpleDateFormat("dd MMM yyyy", Locale.getDefault()) }
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(expenses, key = { it.id }) { expense ->
+                items(filteredExpenses, key = { it.id }) { expense ->
+                    val dateDisplay = if (expense.expenseDateLabel.isNotBlank()) expense.expenseDateLabel
+                        else sdf.format(Date(expense.expenseDate))
+                    val statusColor = when (expense.status) {
+                        "approved", "paid" -> MaterialTheme.colorScheme.primary
+                        "rejected" -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.tertiary
+                    }
                     Card(modifier = Modifier.clickable { onSelectExpense(expense) }) {
                         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(expense.category, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                                Column(Modifier.weight(1f)) {
+                                    Text(expense.category, fontWeight = FontWeight.SemiBold)
+                                    Text(expense.accountName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
                                 Text(money(expense.amountTzs), fontWeight = FontWeight.Bold)
                                 IconButton(onClick = { onDeleteExpense(expense) }) {
                                     Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.btn_delete_expense), tint = MaterialTheme.colorScheme.error)
                                 }
                             }
-                            Text(expense.description)
-                            Text("${SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(expense.expenseDate))} · ${expense.status.replace('_', ' ').uppercase()}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (expense.description.isNotBlank()) Text(expense.description, style = MaterialTheme.typography.bodySmall)
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text(dateDisplay, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Surface(shape = MaterialTheme.shapes.small, color = statusColor.copy(alpha = 0.12f)) {
+                                    Text(
+                                        expense.status.replace('_', ' ').uppercase(),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = statusColor,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                             if (expense.status == "pending_approval") {
                                 TextButton(onClick = { onApprove(expense) }) { Text(stringResource(R.string.approve_and_post)) }
                             }
@@ -2423,31 +2598,167 @@ private fun FinanceScreen(
             }
         }
     }
+
+    if (showBudgetDialog) {
+        BudgetManagerDialog(
+            budgets = budgets,
+            onDismiss = { showBudgetDialog = false },
+            onSave = { category, limitTzs -> onSaveBudget(category, limitTzs) },
+            onDelete = { budget -> onDeleteBudget(budget) }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BudgetManagerDialog(
+    budgets: List<com.uwapo.app.data.BudgetEntity>,
+    onDismiss: () -> Unit,
+    onSave: (category: String, limitTzs: Long) -> Unit,
+    onDelete: (com.uwapo.app.data.BudgetEntity) -> Unit
+) {
+    var categoryExpanded by remember { mutableStateOf(false) }
+    var selectedCategory by remember { mutableStateOf(EXPENSE_CATEGORIES.first()) }
+    var limitStr by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.budget_manager_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (budgets.isNotEmpty()) {
+                    Text(stringResource(R.string.current_budgets), fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
+                    budgets.forEach { b ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                            Column(Modifier.weight(1f)) {
+                                Text(b.category, fontWeight = FontWeight.SemiBold)
+                                Text(money(b.limitTzs), style = MaterialTheme.typography.bodySmall)
+                            }
+                            IconButton(onClick = { onDelete(b) }) {
+                                Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                    HorizontalDivider()
+                }
+                Text(stringResource(R.string.add_budget), fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
+                ExposedDropdownMenuBox(expanded = categoryExpanded, onExpandedChange = { categoryExpanded = it }) {
+                    OutlinedTextField(
+                        value = selectedCategory, onValueChange = {}, readOnly = true,
+                        label = { Text(stringResource(R.string.label_category)) },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryExpanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(expanded = categoryExpanded, onDismissRequest = { categoryExpanded = false }) {
+                        EXPENSE_CATEGORIES.forEach { cat ->
+                            DropdownMenuItem(text = { Text(cat) }, onClick = { selectedCategory = cat; categoryExpanded = false })
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = limitStr, onValueChange = { limitStr = it; error = "" },
+                    label = { Text(stringResource(R.string.budget_limit_tzs)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true, modifier = Modifier.fillMaxWidth()
+                )
+                if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                val limit = limitStr.toLongOrNull()
+                if (limit == null || limit <= 0) { error = "Enter a valid positive amount."; return@Button }
+                onSave(selectedCategory, limit)
+                limitStr = ""
+                error = ""
+            }) { Text(stringResource(R.string.btn_save_budget)) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.btn_cancel)) } }
+    )
 }
 
 
 
 
 
+private val EXPENSE_CATEGORIES = listOf(
+    "Stationery", "Venue / Rent", "Events", "Member Welfare",
+    "Transport", "Utilities", "Refreshments", "Administration",
+    "Banking Fees", "Maintenance", "Other"
+)
+
+private val ACCOUNT_NAMES = listOf("Cash", "Bank", "Mobile Money")
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AddExpenseDialog(onDismiss: () -> Unit, onSave: (String, String, Long) -> Unit) {
-    var category by remember { mutableStateOf("Operations") }
+private fun AddExpenseDialog(onDismiss: () -> Unit, onSave: (String, String, Long, String, String) -> Unit) {
+    var categoryExpanded by remember { mutableStateOf(false) }
+    var accountExpanded by remember { mutableStateOf(false) }
+    var selectedCategory by remember { mutableStateOf(EXPENSE_CATEGORIES.first()) }
+    var selectedAccount by remember { mutableStateOf(ACCOUNT_NAMES.first()) }
     var description by remember { mutableStateOf("") }
     var amount by remember { mutableStateOf("") }
+    var dateLabel by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.dialog_record_expense)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(category, { category = it }, label = { Text(stringResource(R.string.label_category)) }, singleLine = true)
-                OutlinedTextField(description, { description = it }, label = { Text(stringResource(R.string.label_description)) })
-                OutlinedTextField(amount, { amount = it; error = "" }, label = { Text(stringResource(R.string.label_amount_tzs)) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)
+                // Category dropdown
+                ExposedDropdownMenuBox(expanded = categoryExpanded, onExpandedChange = { categoryExpanded = it }) {
+                    OutlinedTextField(
+                        value = selectedCategory, onValueChange = {}, readOnly = true,
+                        label = { Text(stringResource(R.string.label_category)) },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryExpanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(expanded = categoryExpanded, onDismissRequest = { categoryExpanded = false }) {
+                        EXPENSE_CATEGORIES.forEach { cat ->
+                            DropdownMenuItem(text = { Text(cat) }, onClick = { selectedCategory = cat; categoryExpanded = false })
+                        }
+                    }
+                }
+                // Account dropdown
+                ExposedDropdownMenuBox(expanded = accountExpanded, onExpandedChange = { accountExpanded = it }) {
+                    OutlinedTextField(
+                        value = selectedAccount, onValueChange = {}, readOnly = true,
+                        label = { Text(stringResource(R.string.label_account)) },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = accountExpanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(expanded = accountExpanded, onDismissRequest = { accountExpanded = false }) {
+                        ACCOUNT_NAMES.forEach { acc ->
+                            DropdownMenuItem(text = { Text(acc) }, onClick = { selectedAccount = acc; accountExpanded = false })
+                        }
+                    }
+                }
+                OutlinedTextField(description, { description = it }, label = { Text(stringResource(R.string.label_description)) }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    amount, { amount = it; error = "" },
+                    label = { Text(stringResource(R.string.label_amount_tzs)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true, modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    dateLabel, { dateLabel = it },
+                    label = { Text(stringResource(R.string.label_expense_date)) },
+                    placeholder = { Text("dd/MM/yyyy or leave blank for today") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth()
+                )
                 Text(stringResource(R.string.expense_pending_note), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
             }
         },
-        confirmButton = { Button(onClick = { val parsed = amount.toLongOrNull(); if (category.isBlank() || description.isBlank()) error = "Enter a category and description." else if (parsed == null || parsed <= 0) error = "Enter a valid amount." else onSave(category.trim(), description.trim(), parsed) }) { Text(stringResource(R.string.btn_save_expense)) } },
+        confirmButton = {
+            Button(onClick = {
+                val parsed = amount.toLongOrNull()
+                if (description.isBlank()) { error = "Enter a description."; return@Button }
+                if (parsed == null || parsed <= 0) { error = "Enter a valid amount."; return@Button }
+                onSave(selectedCategory, description.trim(), parsed, selectedAccount, dateLabel.trim())
+            }) { Text(stringResource(R.string.btn_save_expense)) }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.btn_cancel)) } }
     )
 }

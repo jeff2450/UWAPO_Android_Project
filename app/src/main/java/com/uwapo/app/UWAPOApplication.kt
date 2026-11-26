@@ -49,7 +49,8 @@ class UWAPOApplication : Application() {
                 UWAPODatabase.MIGRATION_1_2,
                 UWAPODatabase.MIGRATION_2_3,
                 UWAPODatabase.MIGRATION_3_4,
-                UWAPODatabase.MIGRATION_4_5
+                UWAPODatabase.MIGRATION_4_5,
+                UWAPODatabase.MIGRATION_5_6
             )
             .addCallback(UWAPODatabase.SEED_CALLBACK)
             .fallbackToDestructiveMigrationOnDowngrade()

@@ -57,7 +57,8 @@ fun ExpenseDetailDialog(
     }
 
     val moneyStr = "TZS " + NumberFormat.getIntegerInstance(Locale("en", "TZ")).format(expense.amountTzs)
-    val dateStr = SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(expense.expenseDate))
+    val dateStr = if (expense.expenseDateLabel.isNotBlank()) expense.expenseDateLabel
+        else SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(expense.expenseDate))
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -73,7 +74,7 @@ fun ExpenseDetailDialog(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(expense.description, style = MaterialTheme.typography.bodyLarge)
                 Text("${stringResource(R.string.label_amount_tzs)}: $moneyStr", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                Text("Date: $dateStr · Status: ${expense.status.replace('_', ' ').uppercase()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("${stringResource(R.string.label_account)}: ${expense.accountName} · Date: $dateStr · Status: ${expense.status.replace('_', ' ').uppercase()}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                 Spacer(Modifier.height(4.dp))
                 Text(stringResource(R.string.expense_receipt_photo), fontWeight = FontWeight.SemiBold)

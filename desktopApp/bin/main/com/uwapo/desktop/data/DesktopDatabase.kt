@@ -49,7 +49,17 @@ data class ExpenseEntity(
     val accountName: String = "Cash",
     val status: String = "pending_approval",
     val syncStatus: String = "local",
-    val receiptImagePath: String = ""
+    val receiptImagePath: String = "",
+    val expenseDateLabel: String = "",
+    val approvalNote: String = ""
+)
+
+data class BudgetEntity(
+    val id: String,
+    val year: Int,
+    val category: String,
+    val limitTzs: Long,
+    val createdAt: Long = System.currentTimeMillis()
 )
 
 class DesktopDatabase {
@@ -71,6 +81,9 @@ class DesktopDatabase {
 
     private val _batches = MutableStateFlow<List<Int>>(emptyList())
     val batches: StateFlow<List<Int>> = _batches.asStateFlow()
+
+    private val _budgets = MutableStateFlow<List<BudgetEntity>>(emptyList())
+    val budgets: StateFlow<List<BudgetEntity>> = _budgets.asStateFlow()
 
     init {
         val userHome = System.getProperty("user.home") ?: "."
@@ -140,7 +153,23 @@ class DesktopDatabase {
                         accountName TEXT DEFAULT 'Cash',
                         status TEXT DEFAULT 'pending_approval',
                         syncStatus TEXT DEFAULT 'local',
-                        receiptImagePath TEXT DEFAULT ''
+                        receiptImagePath TEXT DEFAULT '',
+                        expenseDateLabel TEXT DEFAULT '',
+                        approvalNote TEXT DEFAULT ''
+                    );
+                """.trimIndent())
+                // Add columns for existing databases
+                try { stmt.execute("ALTER TABLE expenses ADD COLUMN expenseDateLabel TEXT DEFAULT ''") } catch (_: Exception) {}
+                try { stmt.execute("ALTER TABLE expenses ADD COLUMN approvalNote TEXT DEFAULT ''") } catch (_: Exception) {}
+                // Budgets table
+                stmt.execute("""
+                    CREATE TABLE IF NOT EXISTS budgets (
+                        id TEXT PRIMARY KEY,
+                        year INTEGER NOT NULL,
+                        category TEXT NOT NULL,
+                        limitTzs INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        UNIQUE(year, category)
                     );
                 """.trimIndent())
 
@@ -266,6 +295,7 @@ class DesktopDatabase {
         refreshPayments()
         refreshExpenses()
         refreshBatches()
+        refreshBudgets()
     }
 
     fun refreshMembers() {
@@ -337,7 +367,9 @@ class DesktopDatabase {
                             accountName = rs.getString("accountName") ?: "Cash",
                             status = rs.getString("status") ?: "pending_approval",
                             syncStatus = rs.getString("syncStatus") ?: "local",
-                            receiptImagePath = rs.getString("receiptImagePath") ?: ""
+                            receiptImagePath = rs.getString("receiptImagePath") ?: "",
+                            expenseDateLabel = try { rs.getString("expenseDateLabel") ?: "" } catch (_: Exception) { "" },
+                            approvalNote = try { rs.getString("approvalNote") ?: "" } catch (_: Exception) { "" }
                         )
                     )
                 }
@@ -487,7 +519,7 @@ class DesktopDatabase {
 
     fun insertExpense(e: ExpenseEntity) {
         getConnection().use { conn ->
-            val sql = "INSERT OR REPLACE INTO expenses (id, category, description, amountTzs, expenseDate, accountName, status, syncStatus, receiptImagePath) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            val sql = "INSERT OR REPLACE INTO expenses (id, category, description, amountTzs, expenseDate, accountName, status, syncStatus, receiptImagePath, expenseDateLabel, approvalNote) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             conn.prepareStatement(sql).use { pstmt ->
                 pstmt.setString(1, e.id)
                 pstmt.setString(2, e.category)
@@ -498,6 +530,8 @@ class DesktopDatabase {
                 pstmt.setString(7, e.status)
                 pstmt.setString(8, e.syncStatus)
                 pstmt.setString(9, e.receiptImagePath)
+                pstmt.setString(10, e.expenseDateLabel)
+                pstmt.setString(11, e.approvalNote)
                 pstmt.executeUpdate()
             }
         }
@@ -560,6 +594,68 @@ class DesktopDatabase {
             }
         }
         refreshExpenses()
+    }
+
+    fun updateExpenseStatusWithNote(expenseId: String, status: String, note: String) {
+        getConnection().use { conn ->
+            conn.prepareStatement("UPDATE expenses SET status = ?, approvalNote = ? WHERE id = ?").use { pstmt ->
+                pstmt.setString(1, status)
+                pstmt.setString(2, note)
+                pstmt.setString(3, expenseId)
+                pstmt.executeUpdate()
+            }
+        }
+        refreshExpenses()
+    }
+
+    fun refreshBudgets() {
+        val list = mutableListOf<BudgetEntity>()
+        getConnection().use { conn ->
+            conn.createStatement().use { stmt ->
+                val rs = stmt.executeQuery("SELECT * FROM budgets ORDER BY year DESC, category")
+                while (rs.next()) {
+                    list.add(
+                        BudgetEntity(
+                            id = rs.getString("id"),
+                            year = rs.getInt("year"),
+                            category = rs.getString("category"),
+                            limitTzs = rs.getLong("limitTzs"),
+                            createdAt = rs.getLong("createdAt")
+                        )
+                    )
+                }
+            }
+        }
+        _budgets.value = list
+    }
+
+    fun upsertBudget(b: BudgetEntity) {
+        getConnection().use { conn ->
+            val sql = """
+                INSERT INTO budgets (id, year, category, limitTzs, createdAt)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(year, category) DO UPDATE SET limitTzs = excluded.limitTzs, createdAt = excluded.createdAt
+            """.trimIndent()
+            conn.prepareStatement(sql).use { pstmt ->
+                pstmt.setString(1, b.id)
+                pstmt.setInt(2, b.year)
+                pstmt.setString(3, b.category)
+                pstmt.setLong(4, b.limitTzs)
+                pstmt.setLong(5, b.createdAt)
+                pstmt.executeUpdate()
+            }
+        }
+        refreshBudgets()
+    }
+
+    fun deleteBudget(budgetId: String) {
+        getConnection().use { conn ->
+            conn.prepareStatement("DELETE FROM budgets WHERE id = ?").use { pstmt ->
+                pstmt.setString(1, budgetId)
+                pstmt.executeUpdate()
+            }
+        }
+        refreshBudgets()
     }
 
     fun updateMemberProfile(id: String, phone: String, status: String, notes: String) {

@@ -5,7 +5,11 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [BatchEntity::class, MemberEntity::class, PaymentEntity::class, ExpenseEntity::class], version = 5, exportSchema = true)
+@Database(
+    entities = [BatchEntity::class, MemberEntity::class, PaymentEntity::class, ExpenseEntity::class, BudgetEntity::class],
+    version = 6,
+    exportSchema = true
+)
 abstract class UWAPODatabase : RoomDatabase() {
     abstract fun uwapoDao(): UWAPODao
     companion object {
@@ -32,8 +36,7 @@ abstract class UWAPODatabase : RoomDatabase() {
         val DEFAULT_BATCH_YEARS = 2023..2027
 
         /**
-         * Seeds the default batches on a brand-new database. Migrated databases are seeded
-         * by [MIGRATION_4_5]; after that batches are fully user-managed (add / delete).
+         * Seeds the default batches on a brand-new database.
          */
         val SEED_CALLBACK = object : RoomDatabase.Callback() {
             override fun onCreate(db: SupportSQLiteDatabase) {
@@ -46,12 +49,6 @@ abstract class UWAPODatabase : RoomDatabase() {
 
         /**
          * Version 5: every batch owns its own members.
-         *
-         * Before this, one global member list was shared by all years, and a member simply
-         * "appeared" in every batch. Now each member row has a batchYear. A member who has
-         * payments in several years is split into one independent copy per year, and each copy
-         * takes only the payments of its own year. Members with no payments go to the year
-         * they joined. Nothing is deleted.
          */
         val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -112,6 +109,26 @@ abstract class UWAPODatabase : RoomDatabase() {
 
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_members_batchYear_memberNo ON members(batchYear, memberNo)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_members_batchYear ON members(batchYear)")
+            }
+        }
+
+        /**
+         * Version 6: adds expenseDateLabel + approvalNote columns to expenses,
+         * and creates the new budgets table for category spending limits.
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE expenses ADD COLUMN expenseDateLabel TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE expenses ADD COLUMN approvalNote TEXT NOT NULL DEFAULT ''")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS budgets (" +
+                    "id TEXT NOT NULL PRIMARY KEY, " +
+                    "year INTEGER NOT NULL, " +
+                    "category TEXT NOT NULL, " +
+                    "limitTzs INTEGER NOT NULL, " +
+                    "createdAt INTEGER NOT NULL)"
+                )
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_budgets_year_category ON budgets(year, category)")
             }
         }
     }

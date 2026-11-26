@@ -185,7 +185,8 @@ object CsvImportExport {
         estimatedArrears: Long,
         memberCount: Int,
         batchBreakdown: Map<String, Long>,
-        arrearsMembers: List<ArrearsMemberExportRow>
+        arrearsMembers: List<ArrearsMemberExportRow>,
+        expenses: List<ExpenseEntity> = emptyList()
     ): ByteArray {
         val rows = mutableListOf<List<Any?>>()
         rows.add(listOf("Financial & Contribution Reports - Monthly Report"))
@@ -215,7 +216,10 @@ object CsvImportExport {
             arrearsMembers.forEach { m ->
                 rows.add(listOf(m.memberNo, m.fullName, m.phone, m.status))
             }
+            rows.add(listOf())
         }
+
+        appendExpenseRegisterRows(rows, periodTitle, expenses)
 
         return createXlsx("Monthly Report", rows)
     }
@@ -229,7 +233,8 @@ object CsvImportExport {
         estimatedArrears: Long,
         memberCount: Int,
         batchBreakdown: Map<String, Long>,
-        arrearsMembers: List<ArrearsMemberExportRow>
+        arrearsMembers: List<ArrearsMemberExportRow>,
+        expenses: List<ExpenseEntity> = emptyList()
     ): String {
         val lines = mutableListOf<String>()
         lines.add(csv("Financial & Contribution Reports - Monthly Report"))
@@ -259,7 +264,10 @@ object CsvImportExport {
             arrearsMembers.forEach { m ->
                 lines.add(listOf(m.memberNo, m.fullName, m.phone, m.status).joinToString(",") { csv(it) })
             }
+            lines.add("")
         }
+
+        appendExpenseRegisterCsv(lines, periodTitle, expenses)
 
         return lines.joinToString("\r\n") + "\r\n"
     }
@@ -272,7 +280,8 @@ object CsvImportExport {
         expectedRevenue: Long,
         estimatedShortfall: Long,
         monthlyBreakdown: Map<String, Long>,
-        arrearsMembers: List<ArrearsMemberExportRow>
+        arrearsMembers: List<ArrearsMemberExportRow>,
+        expenses: List<ExpenseEntity> = emptyList()
     ): ByteArray {
         val rows = mutableListOf<List<Any?>>()
         rows.add(listOf("Financial & Contribution Reports - Annual Report"))
@@ -299,7 +308,10 @@ object CsvImportExport {
             arrearsMembers.forEach { m ->
                 rows.add(listOf(m.memberNo, m.fullName, m.phone, m.amountPaid, m.shortfall))
             }
+            rows.add(listOf())
         }
+
+        appendExpenseRegisterRows(rows, "Year $year", expenses)
 
         return createXlsx("Annual Report $year", rows)
     }
@@ -312,7 +324,8 @@ object CsvImportExport {
         expectedRevenue: Long,
         estimatedShortfall: Long,
         monthlyBreakdown: Map<String, Long>,
-        arrearsMembers: List<ArrearsMemberExportRow>
+        arrearsMembers: List<ArrearsMemberExportRow>,
+        expenses: List<ExpenseEntity> = emptyList()
     ): String {
         val lines = mutableListOf<String>()
         lines.add(csv("Financial & Contribution Reports - Annual Report"))
@@ -339,8 +352,77 @@ object CsvImportExport {
             arrearsMembers.forEach { m ->
                 lines.add(listOf(m.memberNo, m.fullName, m.phone, m.amountPaid.toString(), m.shortfall.toString()).joinToString(",") { csv(it) })
             }
+            lines.add("")
         }
 
+        appendExpenseRegisterCsv(lines, "Year $year", expenses)
+
+        return lines.joinToString("\r\n") + "\r\n"
+    }
+
+    private fun formatExpenseDate(expense: ExpenseEntity, sdf: java.text.SimpleDateFormat): String =
+        expense.expenseDateLabel.ifBlank { sdf.format(java.util.Date(expense.expenseDate)) }
+
+    private fun appendExpenseRegisterRows(rows: MutableList<List<Any?>>, periodLabel: String, expenses: List<ExpenseEntity>) {
+        if (expenses.isEmpty()) return
+        val sdf = java.text.SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
+        rows.add(listOf("EXPENSE REGISTER ($periodLabel)"))
+        rows.add(listOf("Date", "Category", "Description", "Account", "Status", "Amount (TZS)"))
+        expenses.forEach { e ->
+            rows.add(listOf(formatExpenseDate(e, sdf), e.category, e.description, e.accountName, e.status.replace('_', ' ').uppercase(Locale.ROOT), e.amountTzs))
+        }
+        val approvedSum = expenses.filter { it.status == "approved" || it.status == "paid" }.sumOf { it.amountTzs }
+        val pendingSum = expenses.filter { it.status == "pending_approval" }.sumOf { it.amountTzs }
+        rows.add(listOf("APPROVED / PAID TOTAL", "", "", "", "", approvedSum))
+        rows.add(listOf("PENDING APPROVAL TOTAL", "", "", "", "", pendingSum))
+    }
+
+    private fun appendExpenseRegisterCsv(lines: MutableList<String>, periodLabel: String, expenses: List<ExpenseEntity>) {
+        if (expenses.isEmpty()) return
+        val sdf = java.text.SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
+        lines.add(csv("EXPENSE REGISTER ($periodLabel)"))
+        lines.add(listOf("Date", "Category", "Description", "Account", "Status", "Amount (TZS)").joinToString(",") { csv(it) })
+        expenses.forEach { e ->
+            lines.add(
+                listOf(
+                    formatExpenseDate(e, sdf),
+                    e.category,
+                    e.description,
+                    e.accountName,
+                    e.status.replace('_', ' ').uppercase(Locale.ROOT),
+                    e.amountTzs.toString()
+                ).joinToString(",") { csv(it) }
+            )
+        }
+        val approvedSum = expenses.filter { it.status == "approved" || it.status == "paid" }.sumOf { it.amountTzs }
+        val pendingSum = expenses.filter { it.status == "pending_approval" }.sumOf { it.amountTzs }
+        lines.add(listOf("APPROVED / PAID TOTAL", "", "", "", "", approvedSum.toString()).joinToString(",") { csv(it) })
+        lines.add(listOf("PENDING APPROVAL TOTAL", "", "", "", "", pendingSum.toString()).joinToString(",") { csv(it) })
+    }
+
+    fun exportExpenseRegisterToXlsx(title: String, expenses: List<ExpenseEntity>): ByteArray {
+        val rows = mutableListOf<List<Any?>>()
+        rows.add(listOf("UWAPO Club Expense Register"))
+        rows.add(listOf("Scope:", title))
+        rows.add(listOf())
+        if (expenses.isEmpty()) {
+            rows.add(listOf("No expenses recorded for this selection."))
+        } else {
+            appendExpenseRegisterRows(rows, title, expenses)
+        }
+        return createXlsx("Expense Register", rows)
+    }
+
+    fun exportExpenseRegisterToCsv(title: String, expenses: List<ExpenseEntity>): String {
+        val lines = mutableListOf<String>()
+        lines.add(csv("UWAPO Club Expense Register"))
+        lines.add(listOf("Scope:", title).joinToString(",") { csv(it) })
+        lines.add("")
+        if (expenses.isEmpty()) {
+            lines.add(csv("No expenses recorded for this selection."))
+        } else {
+            appendExpenseRegisterCsv(lines, title, expenses)
+        }
         return lines.joinToString("\r\n") + "\r\n"
     }
 

@@ -281,7 +281,8 @@ object PdfGenerator {
         activeCount: Int,
         breakdownMap: Map<String, Long>,
         breakdownTitle: String,
-        arrearsMembers: List<MemberEntity>
+        arrearsMembers: List<MemberEntity>,
+        expenseItems: List<com.uwapo.app.data.ExpenseEntity> = emptyList()
     ): File {
         val document = PdfDocument()
         val paint = Paint().apply { isAntiAlias = true }
@@ -507,6 +508,104 @@ object PdfGenerator {
 
         drawFooter(canvas, pageIndex)
         document.finishPage(page)
+
+        // Expense Register Section (separate page(s) when expenses exist)
+        if (expenseItems.isNotEmpty()) {
+            val expSdf = SimpleDateFormat("dd/MM/yy", Locale.getDefault())
+
+            fun drawExpenseHeaderBanner(c: android.graphics.Canvas, pIndex: Int) {
+                drawHeaderBanner(c, pIndex)
+                paint.color = Color.parseColor("#17365D")
+                c.drawRect(MARGIN_LEFT, 115f, MARGIN_RIGHT, 137f, paint)
+                paint.color = Color.WHITE
+                paint.textSize = 9.5f
+                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                c.drawText("EXPENSE REGISTER / DAFTARI LA MATUMIZI ($periodTitle)", 45f, 129f, paint)
+
+                paint.color = Color.parseColor("#E8EEF5")
+                c.drawRect(MARGIN_LEFT, 137f, MARGIN_RIGHT, 157f, paint)
+                paint.color = Color.parseColor("#17365D")
+                paint.textSize = 8.5f
+                c.drawText("DATE", 45f, 150f, paint)
+                c.drawText("CATEGORY", 105f, 150f, paint)
+                c.drawText("DESCRIPTION", 205f, 150f, paint)
+                c.drawText("ACCOUNT", 355f, 150f, paint)
+                c.drawText("STATUS", 425f, 150f, paint)
+                c.drawText("AMOUNT", 485f, 150f, paint)
+            }
+
+            pageIndex++
+            pageInfo = PdfDocument.PageInfo.Builder(PAGE_WIDTH, PAGE_HEIGHT, pageIndex).create()
+            page = document.startPage(pageInfo)
+            canvas = page.canvas
+            drawExpenseHeaderBanner(canvas, pageIndex)
+            y = 157f
+
+            expenseItems.forEach { exp ->
+                if (y > MARGIN_BOTTOM) {
+                    drawFooter(canvas, pageIndex)
+                    document.finishPage(page)
+
+                    pageIndex++
+                    pageInfo = PdfDocument.PageInfo.Builder(PAGE_WIDTH, PAGE_HEIGHT, pageIndex).create()
+                    page = document.startPage(pageInfo)
+                    canvas = page.canvas
+                    drawExpenseHeaderBanner(canvas, pageIndex)
+                    y = 157f
+                }
+
+                y += 17f
+                paint.textSize = 8.5f
+                paint.typeface = Typeface.DEFAULT
+                paint.color = when (exp.status) {
+                    "approved", "paid" -> Color.BLACK
+                    "rejected" -> Color.GRAY
+                    else -> Color.parseColor("#996600")
+                }
+
+                val dateTxt = exp.expenseDateLabel.ifBlank { expSdf.format(Date(exp.expenseDate)) }.take(10)
+                val catTxt = exp.category.take(16)
+                val descTxt = exp.description.take(26)
+                val accTxt = exp.accountName.take(12)
+                val statusTxt = exp.status.replace('_', ' ').uppercase(Locale.ROOT).take(10)
+
+                canvas.drawText(dateTxt, 45f, y, paint)
+                canvas.drawText(catTxt, 105f, y, paint)
+                canvas.drawText(descTxt, 205f, y, paint)
+                canvas.drawText(accTxt, 355f, y, paint)
+                canvas.drawText(statusTxt, 425f, y, paint)
+                canvas.drawText(money(exp.amountTzs), 485f, y, paint)
+
+                paint.color = Color.LTGRAY
+                canvas.drawLine(MARGIN_LEFT, y + 4f, MARGIN_RIGHT, y + 4f, paint)
+            }
+
+            y += 22f
+            if (y > MARGIN_BOTTOM) {
+                drawFooter(canvas, pageIndex)
+                document.finishPage(page)
+
+                pageIndex++
+                pageInfo = PdfDocument.PageInfo.Builder(PAGE_WIDTH, PAGE_HEIGHT, pageIndex).create()
+                page = document.startPage(pageInfo)
+                canvas = page.canvas
+                drawExpenseHeaderBanner(canvas, pageIndex)
+                y = 175f
+            }
+
+            val approvedExpTotal = expenseItems.filter { it.status == "approved" || it.status == "paid" }.sumOf { it.amountTzs }
+            val pendingExpTotal = expenseItems.filter { it.status == "pending_approval" }.sumOf { it.amountTzs }
+            paint.color = Color.parseColor("#E8EEF5")
+            canvas.drawRect(MARGIN_LEFT, y - 13f, MARGIN_RIGHT, y + 20f, paint)
+            paint.color = Color.parseColor("#17365D")
+            paint.textSize = 9.5f
+            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            canvas.drawText("TOTAL APPROVED / PAID: ${money(approvedExpTotal)}", 45f, y, paint)
+            canvas.drawText("PENDING APPROVAL: ${money(pendingExpTotal)}", 330f, y, paint)
+
+            drawFooter(canvas, pageIndex)
+            document.finishPage(page)
+        }
 
         val file = File(context.cacheDir, "report_${reportType.lowercase()}_${System.currentTimeMillis()}.pdf")
         FileOutputStream(file).use { out -> document.writeTo(out) }

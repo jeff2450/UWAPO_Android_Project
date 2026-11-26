@@ -261,4 +261,20 @@
     <string name="member_name_col">Full Name &amp; Member No</string>
     <string name="total_tzs">Total (TZS)</string>
     <string name="generate_landscape_pdf">Generate A4 Landscape PDF</string>
+
+    <!-- Club Finance New Strings (v6) -->
+    <string name="budgets">Budgets</string>
+    <string name="budget_manager_title">Category Budgets</string>
+    <string name="current_budgets">Current Budgets</string>
+    <string name="add_budget">Add / Update Budget</string>
+    <string name="budget_limit_tzs">Budget Limit (TZS)</string>
+    <string name="btn_save_budget">Save Budget</string>
+    <string name="budget_overview">Budget Overview</string>
+    <string name="approved_total">Approved / Paid</string>
+    <string name="pending_total">Pending Approval</string>
+    <string name="search_expenses">Search expenses…</string>
+    <string name="label_account">Account</string>
+    <string name="label_expense_date">Date (optional, e.g. 15/06/2026)</string>
+    <string name="export_expense_register_csv">Export Expense Register (CSV)</string>
+    <string name="export_expense_register_xlsx">Export Expense Register (Excel)</string>
 </resources>

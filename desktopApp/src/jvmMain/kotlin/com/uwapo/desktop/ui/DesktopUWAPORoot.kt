@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.uwapo.desktop.data.BudgetEntity
 import com.uwapo.desktop.data.DesktopCsvImportExport
 import com.uwapo.desktop.data.DesktopDatabase
 import com.uwapo.desktop.data.DuplicateMemberException
@@ -84,6 +85,7 @@ fun DesktopUWAPORoot(
     val payments by db.payments.collectAsState()
     val expenses by db.expenses.collectAsState()
     val batches by db.batches.collectAsState()
+    val budgets by db.budgets.collectAsState()
 
     var currentLanguage by rememberSaveable { mutableStateOf("en") }
     var selectedTab by remember { mutableStateOf(DesktopTab.HOME) }
@@ -208,7 +210,7 @@ fun DesktopUWAPORoot(
                         onShowAddMember = { showAddMember = true },
                         onRequestDeleteMember = { memberToDelete = it }
                     )
-                    DesktopTab.FINANCE -> DesktopFinanceView(expenses, db, currentLanguage)
+                    DesktopTab.FINANCE -> DesktopFinanceView(expenses, budgets, db, currentLanguage)
                     DesktopTab.REPORTS -> DesktopReportsView(members, payments, expenses, currentLanguage)
                 }
             }
@@ -382,9 +384,18 @@ fun DesktopUWAPORoot(
         DesktopRecordExpenseDialog(
             language = currentLanguage,
             onDismiss = { showExpense = false },
-            onSave = { cat, desc, amount ->
+            onSave = { cat, desc, amount, accountName, dateLabel ->
                 val eId = UUID.randomUUID().toString()
-                db.insertExpense(ExpenseEntity(eId, cat, desc, amount))
+                db.insertExpense(
+                    ExpenseEntity(
+                        id = eId,
+                        category = cat,
+                        description = desc,
+                        amountTzs = amount,
+                        accountName = accountName,
+                        expenseDateLabel = dateLabel
+                    )
+                )
                 showExpense = false
             }
         )
@@ -856,32 +867,250 @@ private fun mMatchesSearch(m: MemberEntity, search: String): Boolean {
     return m.fullName.contains(search, true) || m.memberNo.contains(search, true) || m.phone.contains(search, true)
 }
 
-@Composable
-private fun DesktopFinanceView(expenses: List<ExpenseEntity>, db: DesktopDatabase, language: String) {
-    var expenseToDelete by remember { mutableStateOf<ExpenseEntity?>(null) }
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(if (language == "sw") "Matumizi ya Klabu" else "Club Expenses", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+private val DESKTOP_EXPENSE_CATEGORIES = listOf(
+    "Stationery", "Venue / Rent", "Events", "Member Welfare",
+    "Transport", "Utilities", "Refreshments", "Administration",
+    "Banking Fees", "Maintenance", "Other"
+)
 
-        LazyColumnWithScrollbar(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(expenses, key = { it.id }) { e ->
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(e.category, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                            Text(money(e.amountTzs), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            IconButton(onClick = { expenseToDelete = e }) {
-                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
-                            }
+private val DESKTOP_ACCOUNT_NAMES = listOf("Cash", "Bank", "Mobile Money")
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DesktopFinanceView(
+    expenses: List<ExpenseEntity>,
+    budgets: List<BudgetEntity>,
+    db: DesktopDatabase,
+    language: String
+) {
+    var expenseToDelete by remember { mutableStateOf<ExpenseEntity?>(null) }
+    var selectedExpense by remember { mutableStateOf<ExpenseEntity?>(null) }
+    var showBudgetDialog by remember { mutableStateOf(false) }
+    var search by remember { mutableStateOf("") }
+    var statusFilter by remember { mutableStateOf("all") }
+
+    val currentYear = remember { Calendar.getInstance().get(Calendar.YEAR) }
+    val yearBudgets = remember(budgets, currentYear) { budgets.filter { it.year == currentYear } }
+
+    val approvedTotal = remember(expenses) {
+        expenses.filter { it.status == "paid" || it.status == "approved" }.sumOf { it.amountTzs }
+    }
+    val pendingTotal = remember(expenses) {
+        expenses.filter { it.status == "pending_approval" }.sumOf { it.amountTzs }
+    }
+
+    val filteredExpenses = remember(expenses, search, statusFilter) {
+        expenses.filter { exp ->
+            val matchSearch = search.isBlank() ||
+                exp.category.contains(search, true) ||
+                exp.description.contains(search, true) ||
+                exp.accountName.contains(search, true)
+            val matchStatus = when (statusFilter) {
+                "pending" -> exp.status == "pending_approval"
+                "approved" -> exp.status == "approved" || exp.status == "paid"
+                "rejected" -> exp.status == "rejected"
+                else -> true
+            }
+            matchSearch && matchStatus
+        }
+    }
+
+    val sdf = remember { SimpleDateFormat("dd MMM yyyy", Locale.getDefault()) }
+
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (language == "sw") "Matumizi ya Klabu" else "Club Finance & Expenses",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            OutlinedButton(onClick = { showBudgetDialog = true }) {
+                Icon(Icons.Default.BarChart, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(if (language == "sw") "Bajeti ($currentYear)" else "Budgets ($currentYear)")
+            }
+        }
+
+        // Summary cards
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            MetricCard(
+                if (language == "sw") "Imeidhinishwa / Imelipwa" else "Approved / Paid Total",
+                money(approvedTotal),
+                Icons.Default.CheckCircle,
+                Modifier.weight(1f)
+            )
+            MetricCard(
+                if (language == "sw") "Inasubiri Idhini" else "Pending Approval Total",
+                money(pendingTotal),
+                Icons.Default.HourglassEmpty,
+                Modifier.weight(1f)
+            )
+        }
+
+        // Budget overview card
+        if (yearBudgets.isNotEmpty()) {
+            Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp)) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        if (language == "sw") "Muhtasari wa Bajeti ($currentYear)" else "Budget Overview ($currentYear)",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    yearBudgets.forEach { budget ->
+                        val spent = remember(expenses, budget) {
+                            expenses.filter { (it.status == "paid" || it.status == "approved") && it.category == budget.category }.sumOf { it.amountTzs }
                         }
-                        Text(e.description)
-                        Text("Status: ${e.status.uppercase()}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (e.status == "pending_approval") {
-                            TextButton(onClick = { db.updateExpenseStatus(e.id, "paid") }) { Text("Approve & Post") }
+                        val progress = if (budget.limitTzs > 0) (spent.toFloat() / budget.limitTzs).coerceIn(0f, 1f) else 0f
+                        val overBudget = spent > budget.limitTzs
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(budget.category, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "${money(spent)} / ${money(budget.limitTzs)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (overBudget) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            LinearProgressIndicator(
+                                progress = { progress },
+                                modifier = Modifier.fillMaxWidth().height(6.dp),
+                                color = if (overBudget) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                            )
                         }
                     }
                 }
             }
         }
+
+        // Search and status filters
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = search,
+                onValueChange = { search = it },
+                label = { Text(if (language == "sw") "Tafuta matumizi…" else "Search expenses…") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (search.isNotEmpty()) {
+                        IconButton(onClick = { search = "" }) { Icon(Icons.Default.Clear, contentDescription = "Clear") }
+                    }
+                },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val filters = listOf("all", "pending", "approved", "rejected")
+            val labels = if (language == "sw") {
+                listOf("Zote", "Inasubiri", "Imeidhinishwa", "Imekataliwa")
+            } else {
+                listOf("All", "Pending", "Approved", "Rejected")
+            }
+            items(filters.size) { idx ->
+                FilterChip(
+                    selected = statusFilter == filters[idx],
+                    onClick = { statusFilter = filters[idx] },
+                    label = { Text(labels[idx]) }
+                )
+            }
+        }
+
+        if (filteredExpenses.isEmpty()) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text(
+                    if (language == "sw") "Hakuna matumizi yaliyopatikana." else "No matching expenses found.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            LazyColumnWithScrollbar(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(filteredExpenses, key = { it.id }) { e ->
+                    val dateDisplay = e.expenseDateLabel.ifBlank { sdf.format(Date(e.expenseDate)) }
+                    val statusColor = when (e.status) {
+                        "approved", "paid" -> MaterialTheme.colorScheme.primary
+                        "rejected" -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.tertiary
+                    }
+                    Card(Modifier.fillMaxWidth().clickable { selectedExpense = e }) {
+                        Column(Modifier.padding(12.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(e.category, fontWeight = FontWeight.Bold)
+                                    Text(e.accountName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                Text(money(e.amountTzs), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                IconButton(onClick = { expenseToDelete = e }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                            if (e.description.isNotBlank()) {
+                                Text(e.description, style = MaterialTheme.typography.bodyMedium)
+                            }
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text(dateDisplay, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Surface(shape = RoundedCornerShape(6.dp), color = statusColor.copy(alpha = 0.12f)) {
+                                    Text(
+                                        e.status.replace('_', ' ').uppercase(),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = statusColor,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                            if (e.status == "pending_approval") {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(onClick = { db.updateExpenseStatus(e.id, "paid") }) {
+                                        Text(if (language == "sw") "Idhinisha & Lipa" else "Approve & Post")
+                                    }
+                                    OutlinedButton(
+                                        onClick = { db.updateExpenseStatus(e.id, "rejected") },
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                                    ) {
+                                        Text(if (language == "sw") "Kataa" else "Reject")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    selectedExpense?.let { e ->
+        DesktopExpenseDetailDialog(
+            expense = e,
+            language = language,
+            onDismiss = { selectedExpense = null },
+            onApprove = { note ->
+                db.updateExpenseStatusWithNote(e.id, "paid", note)
+                selectedExpense = null
+            },
+            onReject = { note ->
+                db.updateExpenseStatusWithNote(e.id, "rejected", note)
+                selectedExpense = null
+            },
+            onDelete = {
+                expenseToDelete = e
+                selectedExpense = null
+            }
+        )
+    }
+
+    if (showBudgetDialog) {
+        DesktopBudgetManagerDialog(
+            budgets = yearBudgets,
+            year = currentYear,
+            language = language,
+            onDismiss = { showBudgetDialog = false },
+            onSave = { category, limitTzs ->
+                val budgetId = UUID.nameUUIDFromBytes("BUDGET:$currentYear:$category".toByteArray()).toString()
+                db.upsertBudget(BudgetEntity(budgetId, currentYear, category, limitTzs))
+            },
+            onDelete = { budget -> db.deleteBudget(budget.id) }
+        )
     }
 
     expenseToDelete?.let { e ->
@@ -895,6 +1124,142 @@ private fun DesktopFinanceView(expenses: List<ExpenseEntity>, db: DesktopDatabas
             onDismiss = { expenseToDelete = null }
         )
     }
+}
+
+@Composable
+private fun DesktopExpenseDetailDialog(
+    expense: ExpenseEntity,
+    language: String,
+    onDismiss: () -> Unit,
+    onApprove: (String) -> Unit,
+    onReject: (String) -> Unit,
+    onDelete: () -> Unit
+) {
+    val sdf = remember { SimpleDateFormat("dd MMM yyyy", Locale.getDefault()) }
+    val dateDisplay = expense.expenseDateLabel.ifBlank { sdf.format(Date(expense.expenseDate)) }
+    var note by remember { mutableStateOf(expense.approvalNote) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("${expense.category} · ${money(expense.amountTzs)}", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.widthIn(min = 380.dp)) {
+                Text("${if (language == "sw") "Maelezo" else "Description"}: ${expense.description}")
+                Text("${if (language == "sw") "Akaunti" else "Account"}: ${expense.accountName}")
+                Text("${if (language == "sw") "Tarehe" else "Date"}: $dateDisplay")
+                Text("${if (language == "sw") "Hali" else "Status"}: ${expense.status.replace('_', ' ').uppercase()}", fontWeight = FontWeight.SemiBold)
+                if (expense.status == "pending_approval") {
+                    OutlinedTextField(
+                        value = note,
+                        onValueChange = { note = it },
+                        label = { Text(if (language == "sw") "Maoni ya Idhini (hiari)" else "Approval / Rejection Note (optional)") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { onApprove(note.trim()) }, modifier = Modifier.weight(1f)) {
+                            Text(if (language == "sw") "Idhinisha" else "Approve & Post")
+                        }
+                        OutlinedButton(
+                            onClick = { onReject(note.trim()) },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(if (language == "sw") "Kataa" else "Reject")
+                        }
+                    }
+                } else if (expense.approvalNote.isNotBlank()) {
+                    Text("${if (language == "sw") "Maoni" else "Note"}: ${expense.approvalNote}", style = MaterialTheme.typography.bodySmall)
+                }
+                OutlinedButton(
+                    onClick = onDelete,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Delete, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (language == "sw") "Futa Matumizi" else "Delete Expense")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(if (language == "sw") "Funga" else "Close") }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DesktopBudgetManagerDialog(
+    budgets: List<BudgetEntity>,
+    year: Int,
+    language: String,
+    onDismiss: () -> Unit,
+    onSave: (category: String, limitTzs: Long) -> Unit,
+    onDelete: (BudgetEntity) -> Unit
+) {
+    var categoryExpanded by remember { mutableStateOf(false) }
+    var selectedCategory by remember { mutableStateOf(DESKTOP_EXPENSE_CATEGORIES.first()) }
+    var limitStr by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (language == "sw") "Bajeti za Vipengele ($year)" else "Category Budgets ($year)") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.widthIn(min = 380.dp)) {
+                if (budgets.isNotEmpty()) {
+                    Text(if (language == "sw") "Bajeti za Sasa" else "Current Budgets", fontWeight = FontWeight.SemiBold)
+                    budgets.forEach { b ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                            Column(Modifier.weight(1f)) {
+                                Text(b.category, fontWeight = FontWeight.SemiBold)
+                                Text(money(b.limitTzs), style = MaterialTheme.typography.bodySmall)
+                            }
+                            IconButton(onClick = { onDelete(b) }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                    HorizontalDivider()
+                }
+                Text(if (language == "sw") "Ongeza / Sasisha Bajeti" else "Add / Update Budget", fontWeight = FontWeight.SemiBold)
+                ExposedDropdownMenuBox(expanded = categoryExpanded, onExpandedChange = { categoryExpanded = it }) {
+                    OutlinedTextField(
+                        value = selectedCategory, onValueChange = {}, readOnly = true,
+                        label = { Text(if (language == "sw") "Kipengele" else "Category") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryExpanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(expanded = categoryExpanded, onDismissRequest = { categoryExpanded = false }) {
+                        DESKTOP_EXPENSE_CATEGORIES.forEach { cat ->
+                            DropdownMenuItem(text = { Text(cat) }, onClick = { selectedCategory = cat; categoryExpanded = false })
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = limitStr,
+                    onValueChange = { limitStr = it; error = "" },
+                    label = { Text(if (language == "sw") "Kikomo cha Bajeti (TZS)" else "Budget Limit (TZS)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                val limit = limitStr.toLongOrNull()
+                if (limit == null || limit <= 0L) {
+                    error = "Enter a valid positive amount."
+                    return@Button
+                }
+                onSave(selectedCategory, limit)
+                limitStr = ""
+                error = ""
+            }) { Text(if (language == "sw") "Hifadhi Bajeti" else "Save Budget") }
+        },
+        dismissButton = { OutlinedButton(onClick = onDismiss) { Text(if (language == "sw") "Funga" else "Close") } }
+    )
 }
 
 @Composable
@@ -1007,7 +1372,11 @@ private fun DesktopReportsView(
                                     estimatedArrears = (activeCount.toLong() * 10000L - collectionsTotal).coerceAtLeast(0L),
                                     memberCount = activeCount,
                                     batchBreakdown = batchBreakdown,
-                                    arrearsMembers = arrearsList
+                                    arrearsMembers = arrearsList,
+                                    expenses = expenses.filter { exp ->
+                                        val c = Calendar.getInstance(); c.timeInMillis = exp.expenseDate
+                                        c.get(Calendar.YEAR) == selectedYear
+                                    }
                                 )
                             }
                             1 -> {
@@ -1032,7 +1401,11 @@ private fun DesktopReportsView(
                                     expectedRevenue = expectedRev,
                                     estimatedShortfall = shortfall,
                                     monthlyBreakdown = monthlyBreakdown,
-                                    arrearsMembers = arrearsList
+                                    arrearsMembers = arrearsList,
+                                    expenses = expenses.filter { exp ->
+                                        val c = Calendar.getInstance(); c.timeInMillis = exp.expenseDate
+                                        c.get(Calendar.YEAR) == selectedYear
+                                    }
                                 )
                             }
                             else -> {
@@ -1229,26 +1602,92 @@ private fun DesktopRecordPaymentDialog(
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DesktopRecordExpenseDialog(language: String, onDismiss: () -> Unit, onSave: (String, String, Long) -> Unit) {
-    var cat by remember { mutableStateOf("Stationery") }
+private fun DesktopRecordExpenseDialog(
+    language: String,
+    onDismiss: () -> Unit,
+    onSave: (String, String, Long, String, String) -> Unit
+) {
+    var categoryExpanded by remember { mutableStateOf(false) }
+    var accountExpanded by remember { mutableStateOf(false) }
+    var selectedCategory by remember { mutableStateOf(DESKTOP_EXPENSE_CATEGORIES.first()) }
+    var selectedAccount by remember { mutableStateOf(DESKTOP_ACCOUNT_NAMES.first()) }
     var desc by remember { mutableStateOf("") }
     var amtStr by remember { mutableStateOf("") }
+    var dateLabel by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (language == "sw") "Rekodi Matumizi ya Klabu" else "Record Club Expense") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(cat, { cat = it }, label = { Text(if (language == "sw") "Kipengele" else "Category") })
-                OutlinedTextField(desc, { desc = it }, label = { Text(if (language == "sw") "Maelezo" else "Description") })
-                OutlinedTextField(amtStr, { amtStr = it }, label = { Text(if (language == "sw") "Kiasi (TZS)" else "Amount (TZS)") })
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.widthIn(min = 340.dp)) {
+                ExposedDropdownMenuBox(expanded = categoryExpanded, onExpandedChange = { categoryExpanded = it }) {
+                    OutlinedTextField(
+                        value = selectedCategory,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text(if (language == "sw") "Kipengele" else "Category") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = categoryExpanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(expanded = categoryExpanded, onDismissRequest = { categoryExpanded = false }) {
+                        DESKTOP_EXPENSE_CATEGORIES.forEach { cat ->
+                            DropdownMenuItem(text = { Text(cat) }, onClick = { selectedCategory = cat; categoryExpanded = false })
+                        }
+                    }
+                }
+                ExposedDropdownMenuBox(expanded = accountExpanded, onExpandedChange = { accountExpanded = it }) {
+                    OutlinedTextField(
+                        value = selectedAccount,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text(if (language == "sw") "Akaunti" else "Account") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = accountExpanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(expanded = accountExpanded, onDismissRequest = { accountExpanded = false }) {
+                        DESKTOP_ACCOUNT_NAMES.forEach { acc ->
+                            DropdownMenuItem(text = { Text(acc) }, onClick = { selectedAccount = acc; accountExpanded = false })
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = desc,
+                    onValueChange = { desc = it; error = "" },
+                    label = { Text(if (language == "sw") "Maelezo" else "Description") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = amtStr,
+                    onValueChange = { amtStr = it; error = "" },
+                    label = { Text(if (language == "sw") "Kiasi (TZS)" else "Amount (TZS)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = dateLabel,
+                    onValueChange = { dateLabel = it },
+                    label = { Text(if (language == "sw") "Tarehe (hiari, mfano 15/06/2026)" else "Date (optional, e.g. 15/06/2026)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
         },
         confirmButton = {
             Button(onClick = {
-                val amt = amtStr.toLongOrNull() ?: 0L
-                if (cat.isNotBlank() && amt > 0) onSave(cat, desc, amt)
+                val amt = amtStr.toLongOrNull()
+                if (desc.isBlank()) {
+                    error = if (language == "sw") "Weka maelezo." else "Enter a description."
+                    return@Button
+                }
+                if (amt == null || amt <= 0L) {
+                    error = if (language == "sw") "Weka kiasi sahihi." else "Enter a valid positive amount."
+                    return@Button
+                }
+                onSave(selectedCategory, desc.trim(), amt, selectedAccount, dateLabel.trim())
             }) { Text(if (language == "sw") "Hifadhi" else "Save Expense") }
         },
         dismissButton = { OutlinedButton(onClick = onDismiss) { Text(if (language == "sw") "Ghairi" else "Cancel") } }

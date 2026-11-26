@@ -34,6 +34,14 @@ interface UWAPODao {
     @Query("SELECT * FROM payments WHERE memberId = :memberId ORDER BY periodYear DESC, periodMonth DESC")
     suspend fun getMemberPaymentsSync(memberId: String): List<PaymentEntity>
 
+    // --- Budgets ---
+    @Query("SELECT * FROM budgets WHERE year = :year ORDER BY category")
+    fun observeBudgetsForYear(year: Int): Flow<List<BudgetEntity>>
+    @Upsert
+    suspend fun upsertBudget(budget: BudgetEntity)
+    @Query("DELETE FROM budgets WHERE id = :id")
+    suspend fun deleteBudget(id: String)
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertBatchIgnore(batch: BatchEntity): Long
     @Insert(onConflict = OnConflictStrategy.ABORT)
@@ -88,8 +96,12 @@ interface UWAPODao {
     }
     @Query("UPDATE expenses SET status = :status WHERE id = :id")
     suspend fun setExpenseLocalStatus(id: String, status: String)
+    @Query("UPDATE expenses SET status = :status, approvalNote = :note WHERE id = :id")
+    suspend fun setExpenseStatusWithNote(id: String, status: String, note: String)
     @Query("UPDATE expenses SET receiptImagePath = :imagePath WHERE id = :id")
     suspend fun setExpenseReceiptImage(id: String, imagePath: String)
+    @Query("UPDATE expenses SET category = :category, description = :description, amountTzs = :amountTzs, accountName = :accountName, expenseDateLabel = :expenseDateLabel WHERE id = :id")
+    suspend fun updateExpenseDetails(id: String, category: String, description: String, amountTzs: Long, accountName: String, expenseDateLabel: String)
     @Query("UPDATE payments SET syncStatus = 'reversed' WHERE id = :id")
     suspend fun markPaymentReversed(id: String)
     @Query("DELETE FROM payments WHERE id = :id")
@@ -107,4 +119,7 @@ interface UWAPODao {
     fun observeLifetimeTotal(): Flow<Long>
     @Query("SELECT COALESCE(SUM(amountTzs), 0) FROM expenses WHERE status = 'paid' OR status = 'approved'")
     fun observePaidExpensesTotal(): Flow<Long>
+    /** Sum approved/paid expenses for a given category and year string (for budget-vs-actual). */
+    @Query("SELECT COALESCE(SUM(amountTzs), 0) FROM expenses WHERE (status = 'paid' OR status = 'approved') AND category = :category AND strftime('%Y', expenseDate / 1000, 'unixepoch') = :year")
+    suspend fun getApprovedExpensesTotalForCategoryYear(category: String, year: String): Long
 }

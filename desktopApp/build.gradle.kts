@@ -23,6 +23,10 @@ dependencies {
 compose.desktop {
     application {
         mainClass = "com.uwapo.desktop.MainKt"
+        buildTypes.release.proguard {
+            version.set("7.4.2")
+            isEnabled.set(false)
+        }
         nativeDistributions {
             targetFormats(
                 org.jetbrains.compose.desktop.application.dsl.TargetFormat.Dmg,

@@ -63,5 +63,19 @@ data class ExpenseEntity(
     val accountName: String = "Cash",
     val status: String = "pending_approval",
     val syncStatus: String = "local",
-    val receiptImagePath: String = ""
+    val receiptImagePath: String = "",
+    /** Human-readable date override (e.g. "15/06/2026"). Empty = use expenseDate epoch. */
+    val expenseDateLabel: String = "",
+    /** Optional approval or rejection note recorded by chairperson/admin. */
+    val approvalNote: String = ""
+)
+
+/** Category spending limit for a given year — used to show budget-vs-actual progress bars. */
+@Entity(tableName = "budgets", indices = [Index(value = ["year", "category"], unique = true)])
+data class BudgetEntity(
+    @PrimaryKey val id: String,
+    val year: Int,
+    val category: String,
+    val limitTzs: Long,
+    val createdAt: Long = System.currentTimeMillis()
 )
